@@ -60,8 +60,8 @@ from PySide6.QtWidgets import (
 
 from xfyun_client import XfyunInterpreter, set_manuscript_cache_db
 
-APP_NAME = "ísmolar 同声传译 · v1.9.7 简洁界面版"
-APP_VERSION = "1.9.7"
+APP_NAME = "ísmolar 同声传译 · v1.9.8 简洁界面版"
+APP_VERSION = "1.9.8"
 
 TOKENS = {
     "bg": "#F6F9FD",
@@ -670,6 +670,10 @@ class SubtitleOverlay(QMainWindow):
         self._drag_origin: QPoint | None = None
         self._drag_window_origin: QPoint | None = None
         self._press_global: QPoint | None = None
+        self._resizing = False
+        self._resize_zone_name: str | None = None
+        self._resize_origin: QPoint | None = None
+        self._resize_start_geometry: QRect | None = None
         self._full_chinese = ""
         self._full_english = ""
         self._source_transcript = ""
@@ -786,8 +790,16 @@ class SubtitleOverlay(QMainWindow):
             self.subtitle_splitter,
             self.primary_subtitle,
             self.secondary_subtitle,
+            self.resize_grip,
         ):
             watched.installEventFilter(self)
+        for watched in (
+            self.container,
+            self.primary_subtitle,
+            self.secondary_subtitle,
+            self.resize_grip,
+        ):
+            watched.setMouseTracking(True)
         self.side_toolbar.hide()
 
     def apply_config(self, config: dict) -> None:
@@ -1042,38 +1054,137 @@ class SubtitleOverlay(QMainWindow):
     def _hide_toolbar(self) -> None:
         self.side_toolbar.hide()
 
+    def _resize_zone(self, global_pos: QPoint) -> str | None:
+        """把屏幕坐标映射到浮窗边缘/角落区域，返回缩放方向。"""
+        local = self.mapFromGlobal(global_pos)
+        edge = 10
+        left = local.x() <= edge
+        right = local.x() >= self.width() - edge
+        top = local.y() <= edge
+        bottom = local.y() >= self.height() - edge
+        if left and top:
+            return "nw"
+        if right and top:
+            return "ne"
+        if left and bottom:
+            return "sw"
+        if right and bottom:
+            return "se"
+        if left:
+            return "w"
+        if right:
+            return "e"
+        if top:
+            return "n"
+        if bottom:
+            return "s"
+        return None
+
+    @staticmethod
+    def _resize_cursor(zone: str | None) -> Qt.CursorShape:
+        return {
+            "n": Qt.CursorShape.SizeVerCursor,
+            "s": Qt.CursorShape.SizeVerCursor,
+            "e": Qt.CursorShape.SizeHorCursor,
+            "w": Qt.CursorShape.SizeHorCursor,
+            "ne": Qt.CursorShape.SizeBDiagCursor,
+            "sw": Qt.CursorShape.SizeBDiagCursor,
+            "nw": Qt.CursorShape.SizeFDiagCursor,
+            "se": Qt.CursorShape.SizeFDiagCursor,
+        }.get(zone or "", Qt.CursorShape.ArrowCursor)
+
+    def _apply_resize_delta(self, delta: QPoint) -> None:
+        """按拖拽增量调整浮窗几何，保证不小于最小尺寸。"""
+        start = self._resize_start_geometry
+        zone = self._resize_zone_name
+        if start is None or zone is None:
+            return
+        new = QRect(start)
+        min_width = self.minimumWidth()
+        min_height = self.minimumHeight()
+        if "w" in zone:
+            new.setLeft(min(start.left() + delta.x(), start.right() - min_width))
+        if "e" in zone:
+            new.setRight(max(start.right() + delta.x(), start.left() + min_width))
+        if "n" in zone:
+            new.setTop(min(start.top() + delta.y(), start.bottom() - min_height))
+        if "s" in zone:
+            new.setBottom(max(start.bottom() + delta.y(), start.top() + min_height))
+        new.setWidth(min(new.width(), 4000))
+        new.setHeight(min(new.height(), 4000))
+        self.setGeometry(new)
+
     def eventFilter(self, watched, event) -> bool:  # type: ignore[override]
         if watched in (
             self.container,
             self.subtitle_splitter,
             self.primary_subtitle,
             self.secondary_subtitle,
+            self.resize_grip,
         ):
-            if event.type() == QEvent.Type.MouseButtonPress and isinstance(event, QMouseEvent):
-                if event.button() == Qt.MouseButton.LeftButton:
-                    self._drag_origin = event.globalPosition().toPoint()
-                    self._drag_window_origin = self.pos()
-                    self._press_global = event.globalPosition().toPoint()
-            elif event.type() == QEvent.Type.MouseMove and isinstance(event, QMouseEvent):
-                if self._drag_origin is not None and event.buttons() & Qt.MouseButton.LeftButton:
-                    delta = event.globalPosition().toPoint() - self._drag_origin
-                    if abs(delta.x()) + abs(delta.y()) > 5:
-                        self.move(self._drag_window_origin + delta)
+            if isinstance(event, QMouseEvent):
+                event_type = event.type()
+                global_pos = event.globalPosition().toPoint()
+                if event_type == QEvent.Type.MouseButtonPress:
+                    if event.button() == Qt.MouseButton.LeftButton:
+                        zone = self._resize_zone(global_pos)
+                        if zone is not None:
+                            # 边缘/角落：进入手动缩放，无边框浮窗不依赖系统把手。
+                            self._resizing = True
+                            self._resize_zone_name = zone
+                            self._resize_origin = global_pos
+                            self._resize_start_geometry = self.geometry()
+                            return True
+                        self._drag_origin = global_pos
+                        self._drag_window_origin = self.pos()
+                        self._press_global = global_pos
+                elif event_type == QEvent.Type.MouseMove:
+                    if (
+                        self._resizing
+                        and self._resize_origin is not None
+                        and self._resize_start_geometry is not None
+                        and event.buttons() & Qt.MouseButton.LeftButton
+                    ):
+                        self._apply_resize_delta(global_pos - self._resize_origin)
                         return True
-            elif event.type() == QEvent.Type.MouseButtonRelease:
-                release_pos = (
-                    event.globalPosition().toPoint()
-                    if isinstance(event, QMouseEvent)
-                    else self._press_global
-                )
-                if self._press_global is not None and release_pos is not None:
-                    delta = release_pos - self._press_global
-                    if abs(delta.x()) + abs(delta.y()) <= 6:
-                        self._reveal_toolbar()
-                self._drag_origin = None
-                self._drag_window_origin = None
-                self._press_global = None
-                self.settings_changed.emit(self.current_settings())
+                    if not event.buttons() & Qt.MouseButton.LeftButton:
+                        # 悬停边缘时显示双箭头缩放光标。
+                        if watched in (
+                            self.container,
+                            self.primary_subtitle,
+                            self.secondary_subtitle,
+                            self.resize_grip,
+                        ):
+                            cursor = self._resize_cursor(self._resize_zone(global_pos))
+                            if watched.cursor().shape() != cursor:
+                                watched.setCursor(cursor)
+                    if self._drag_origin is not None and event.buttons() & Qt.MouseButton.LeftButton:
+                        delta = global_pos - self._drag_origin
+                        if abs(delta.x()) + abs(delta.y()) > 5:
+                            self.move(self._drag_window_origin + delta)
+                            return True
+                elif event_type == QEvent.Type.MouseButtonRelease:
+                    if self._resizing:
+                        self._resizing = False
+                        self._resize_zone_name = None
+                        self._resize_origin = None
+                        self._resize_start_geometry = None
+                        self._drag_origin = None
+                        self._drag_window_origin = None
+                        self._press_global = None
+                        self.settings_changed.emit(self.current_settings())
+                        return True
+                    if self._press_global is not None:
+                        delta = global_pos - self._press_global
+                        if abs(delta.x()) + abs(delta.y()) <= 6:
+                            self._reveal_toolbar()
+                    self._drag_origin = None
+                    self._drag_window_origin = None
+                    self._press_global = None
+                    self.settings_changed.emit(self.current_settings())
+                elif event_type == QEvent.Type.Leave:
+                    if watched.cursor().shape() != Qt.CursorShape.ArrowCursor:
+                        watched.unsetCursor()
         return super().eventFilter(watched, event)
 
 

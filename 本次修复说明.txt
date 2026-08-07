@@ -1,6 +1,13 @@
-ísmolar 同声传译 v1.9.7｜简洁界面版
+ísmolar 同声传译 v1.9.8｜简洁界面版
 
 本版变化
+====================
+
+- 修复字幕浮窗无法缩放的问题：浮窗是无边框窗口，系统缩放把手不可靠，
+  现在手动实现了四边 + 四角缩放，鼠标移到边缘会显示双箭头光标，
+  直接拖拽即可调整浮窗大小，macOS / Windows 行为一致。
+
+上一版（v1.9.7）
 ====================
 
 - 修复新机器首次运行的问题：Application Support 目录不存在时，
@@ -35,10 +42,10 @@
 3. 连续说 5 句英文后停止，确认 5 句译文全部出现在文档中。
 
 正确标题：
-ísmolar 同声传译 · v1.9.7 简洁界面版
+ísmolar 同声传译 · v1.9.8 简洁界面版
 
 制作 DMG：
 ①一键制作DMG.command
 
 生成：
-dist/ismolar-interpreter-macOS-local-v1.9.7.dmg
+dist/ismolar-interpreter-macOS-local-v1.9.8.dmg

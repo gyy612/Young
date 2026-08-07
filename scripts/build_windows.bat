@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0\.."
 
-set VERSION=1.9.7
+set VERSION=1.9.8
 echo ========================================
 echo ismolar interpreter v%VERSION% - Windows build
 echo ========================================

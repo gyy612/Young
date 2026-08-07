@@ -53,8 +53,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleDisplayName": "ísmolar 同声传译",
         "CFBundleName": "ísmolar 同声传译",
-        "CFBundleShortVersionString": "1.9.7",
-        "CFBundleVersion": "1.9.7",
+        "CFBundleShortVersionString": "1.9.8",
+        "CFBundleVersion": "1.9.8",
         "NSMicrophoneUsageDescription": "ísmolar 同声传译需要使用麦克风进行实时语音识别和翻译。",
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "12.0",
