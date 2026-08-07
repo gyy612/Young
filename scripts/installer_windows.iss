@@ -2,7 +2,7 @@
 ; File must be compiled with iscc on Windows.
 
 #define MyAppName "ismolar Interpreter"
-#define MyAppVersion "1.9.9"
+#define MyAppVersion "1.9.10"
 #define MyAppExeName "ismolar-interpreter.exe"
 
 [Setup]

@@ -50,7 +50,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSizeGrip,
-    QSpinBox,
     QSplitter,
     QTextEdit,
     QVBoxLayout,
@@ -59,8 +58,8 @@ from PySide6.QtWidgets import (
 
 from xfyun_client import XfyunInterpreter, set_manuscript_cache_db
 
-APP_NAME = "ísmolar 同声传译 · v1.9.9 简洁界面版"
-APP_VERSION = "1.9.9"
+APP_NAME = "ísmolar 同声传译 · v1.9.10 简洁界面版"
+APP_VERSION = "1.9.10"
 
 TOKENS = {
     "bg": "#F6F9FD",
@@ -411,6 +410,66 @@ class TranslationTimingDialog(QDialog):
         return str(self.combo.currentData() or "adaptive")
 
 
+class AppleStepper(QWidget):
+    """苹果风格步进器：数值 + 圆形 −/+ 按钮，替代系统箭头输入框。"""
+
+    value_changed = Signal(int)
+
+    def __init__(
+        self,
+        value: int,
+        minimum: int = 12,
+        maximum: int = 96,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._minimum = minimum
+        self._maximum = maximum
+        self._value = max(minimum, min(maximum, int(value)))
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        self.value_label = QLabel(str(self._value))
+        self.value_label.setObjectName("stepperValue")
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.value_label.setFixedWidth(40)
+
+        self.minus_button = self._make_button("−", "减小")
+        self.plus_button = self._make_button("+", "增大")
+        self.minus_button.clicked.connect(lambda: self.set_value(self._value - 1))
+        self.plus_button.clicked.connect(lambda: self.set_value(self._value + 1))
+
+        layout.addWidget(self.value_label)
+        layout.addWidget(self.minus_button)
+        layout.addWidget(self.plus_button)
+        self._refresh()
+
+    def _make_button(self, glyph: str, tip: str) -> QPushButton:
+        button = QPushButton(glyph)
+        button.setObjectName("stepperButton")
+        button.setFixedSize(26, 26)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setToolTip(tip)
+        return button
+
+    def value(self) -> int:
+        return self._value
+
+    def set_value(self, value: int) -> None:
+        value = max(self._minimum, min(self._maximum, int(value)))
+        if value != self._value:
+            self._value = value
+            self._refresh()
+            self.value_changed.emit(self._value)
+
+    def _refresh(self) -> None:
+        self.value_label.setText(str(self._value))
+        self.minus_button.setEnabled(self._value > self._minimum)
+        self.plus_button.setEnabled(self._value < self._maximum)
+
+
 class OverlaySettingsDialog(QDialog):
     def __init__(self, settings: dict, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -460,27 +519,21 @@ class OverlaySettingsDialog(QDialog):
         self.weight.setCurrentIndex(max(0, weight_index))
         form.addRow("字重", self.weight)
 
-        self.cn_size = QSpinBox()
-        self.cn_size.setRange(12, 96)
-        self.cn_size.setValue(int(settings.get("chinese_size", 34)))
-        self.cn_size.setSuffix(" pt")
+        self.cn_size = AppleStepper(int(settings.get("chinese_size", 34)), 12, 96)
         form.addRow("中文字号", self.cn_size)
 
-        self.en_size = QSpinBox()
-        self.en_size.setRange(12, 96)
-        self.en_size.setValue(int(settings.get("english_size", 32)))
-        self.en_size.setSuffix(" pt")
+        self.en_size = AppleStepper(int(settings.get("english_size", 32)), 12, 96)
         form.addRow("英文字号", self.en_size)
 
-        self.text_color_button = QPushButton()
-        self.text_color_button.clicked.connect(self._choose_text_color)
-        self._update_color_button(self.text_color_button, self._text_color, "字色")
-        form.addRow("字幕颜色", self.text_color_button)
+        self.text_color_row, self.text_color_button, self.text_color_label = (
+            self._make_color_row(self._text_color, self._choose_text_color)
+        )
+        form.addRow("字幕颜色", self.text_color_row)
 
-        self.outline_color_button = QPushButton()
-        self.outline_color_button.clicked.connect(self._choose_outline_color)
-        self._update_color_button(self.outline_color_button, self._outline_color, "描边色")
-        form.addRow("描边颜色", self.outline_color_button)
+        self.outline_color_row, self.outline_color_button, self.outline_color_label = (
+            self._make_color_row(self._outline_color, self._choose_outline_color)
+        )
+        form.addRow("描边颜色", self.outline_color_row)
 
         self.outline = QCheckBox("启用字幕描边")
         self.outline.setChecked(bool(settings.get("outline_enabled", True)))
@@ -495,24 +548,51 @@ class OverlaySettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def _make_color_row(
+        self, color: QColor, chooser
+    ) -> tuple[QWidget, QPushButton, QLabel]:
+        """苹果风格色块：圆形色井 + 十六进制值，点击打开系统取色器。"""
+        swatch = QPushButton()
+        swatch.setObjectName("colorWell")
+        swatch.setFixedSize(30, 30)
+        swatch.setCursor(Qt.CursorShape.PointingHandCursor)
+        swatch.setToolTip("点击选择颜色")
+        swatch.clicked.connect(chooser)
+        label = QLabel()
+        label.setObjectName("mutedLabel")
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(10)
+        row_layout.addWidget(swatch)
+        row_layout.addWidget(label)
+        self._apply_swatch(swatch, color, label)
+        return row, swatch, label
+
     @staticmethod
-    def _update_color_button(button: QPushButton, color: QColor, label: str) -> None:
-        button.setText(f"{label}  {color.name().upper()}")
-        button.setStyleSheet(
-            f"QPushButton {{ border-left: 22px solid {color.name()}; }}"
+    def _apply_swatch(swatch: QPushButton, color: QColor, label: QLabel) -> None:
+        swatch.setStyleSheet(
+            "QPushButton#colorWell {"
+            f" background-color: {color.name()};"
+            " border: 1px solid #B8B8BD;"
+            " border-radius: 14px;"
+            " min-height: 0; min-width: 0; padding: 0;"
+            " }"
+            " QPushButton#colorWell:pressed { border: 2px solid #007AFF; }"
         )
+        label.setText(color.name().upper())
 
     def _choose_text_color(self) -> None:
         color = QColorDialog.getColor(self._text_color, self, "选择字幕颜色")
         if color.isValid():
             self._text_color = color
-            self._update_color_button(self.text_color_button, color, "字色")
+            self._apply_swatch(self.text_color_button, color, self.text_color_label)
 
     def _choose_outline_color(self) -> None:
         color = QColorDialog.getColor(self._outline_color, self, "选择描边颜色")
         if color.isValid():
             self._outline_color = color
-            self._update_color_button(self.outline_color_button, color, "描边色")
+            self._apply_swatch(self.outline_color_button, color, self.outline_color_label)
 
     def values(self) -> dict:
         return {
@@ -2349,9 +2429,14 @@ def stylesheet() -> str:
     QPushButton#outlineButton {{ background: white; color: {TOKENS['deep_blue']}; border: 1px solid #9DB6D8; }}
     QPushButton#ghostButton {{ background: transparent; border: none; color: {TOKENS['muted']}; min-height: 34px; padding: 0 10px; }}
     QPushButton#ghostButton:hover {{ background: transparent; color: {TOKENS['danger']}; }}
-    QLineEdit, QSpinBox, QTextEdit {{ background: white; color: {TOKENS['text']}; border: 1px solid {TOKENS['border']}; border-radius: 8px; padding: 8px 12px; selection-background-color: {TOKENS['blue']}; }}
-    QLineEdit:focus, QSpinBox:focus, QTextEdit:focus {{ border: 2px solid #90B8EA; }}
-    QLineEdit, QSpinBox {{ min-height: 38px; }}
+    QPushButton#stepperButton {{ min-height: 0; min-width: 0; padding: 0; border-radius: 13px; background: {TOKENS['white']}; border: 1px solid #C7C7CC; color: {TOKENS['text']}; font-size: 17px; font-weight: 500; }}
+    QPushButton#stepperButton:hover {{ background: #F2F2F7; border-color: #B5B5BA; }}
+    QPushButton#stepperButton:pressed {{ background: #E5E5EA; }}
+    QPushButton#stepperButton:disabled {{ background: #F9F9FB; color: #C7C7CC; border-color: #E6E6EA; }}
+    QLabel#stepperValue {{ color: {TOKENS['text']}; font-size: 15px; font-weight: 600; min-height: 0; }}
+    QLineEdit, QTextEdit {{ background: white; color: {TOKENS['text']}; border: 1px solid {TOKENS['border']}; border-radius: 8px; padding: 8px 12px; selection-background-color: {TOKENS['blue']}; }}
+    QLineEdit:focus, QTextEdit:focus {{ border: 2px solid #90B8EA; }}
+    QLineEdit {{ min-height: 38px; }}
     QTextEdit {{ line-height: 1.55; }}
     QComboBox {{ background: white; color: {TOKENS['text']}; border: 1px solid {TOKENS['border']}; border-radius: 8px; padding: 3px 10px; padding-right: 26px; min-height: 34px; selection-background-color: {TOKENS['blue']}; }}
     QComboBox:hover {{ border-color: #AEC5E5; }}
