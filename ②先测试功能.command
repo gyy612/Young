@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
-LOG="$ROOT/源码测试日志-v1.9.5.txt"
+LOG="$ROOT/源码测试日志-v1.9.6.txt"
 exec > >(tee "$LOG") 2>&1
 
 finish() {

@@ -4,12 +4,12 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="1.9.5"
+VERSION="1.9.6"
 APP_ASCII="ismolar-interpreter"
 APP_DISPLAY="ísmolar 同声传译"
 APP_PATH="$ROOT/dist/${APP_ASCII}.app"
 DMG_PATH="$ROOT/dist/ismolar-interpreter-macOS-local-v${VERSION}.dmg"
-LOG_PATH="$ROOT/本地打包日志-v1.9.5.txt"
+LOG_PATH="$ROOT/本地打包日志-v1.9.6.txt"
 
 exec > >(tee "$LOG_PATH") 2>&1
 
@@ -23,7 +23,7 @@ on_error() {
   echo
   echo "========================================"
   echo "制作失败，错误代码：$code"
-  echo "请把“本地打包日志-v1.9.5.txt”发给我。"
+  echo "请把“本地打包日志-v1.9.6.txt”发给我。"
   echo "========================================"
   pause_on_exit
   exit "$code"

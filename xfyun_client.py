@@ -10,6 +10,7 @@ import os
 import platform
 import queue
 import re
+import sqlite3
 import ssl
 import subprocess
 import threading
@@ -32,10 +33,84 @@ BLOCK_FRAMES = 640  # 40ms at 16kHz, 16-bit mono = 1280 bytes
 
 # 稿件/句子翻译记忆：{(规范化原文, 目标语言): 译文}
 # 稿件预翻译和实时翻译共用，命中后直接返回，跳过 DeepSeek 等待。
-# ponytail: 固定上限的进程内缓存，不落盘、不淘汰；需要跨会话时再加磁盘持久化。
+# 两级记忆：内存热缓存满后，先把最旧一批落盘到 SQLite 再腾位置；
+# 查找时先查内存、未命中再查磁盘并加载回热缓存，磁盘记忆跨会话保留。
 _MANUSCRIPT_CACHE: dict[tuple[str, str], str] = {}
 _MANUSCRIPT_CACHE_LOCK = threading.Lock()
-_MANUSCRIPT_CACHE_MAX = 800
+_MANUSCRIPT_CACHE_MAX = 800          # 内存热缓存条数上限
+_MANUSCRIPT_FLUSH_BATCH = 100        # 每次腾位置时先落盘的条数
+_MANUSCRIPT_DB_PATH: str | None = None
+_MANUSCRIPT_DB_CONN: sqlite3.Connection | None = None
+_MANUSCRIPT_DB_OK = False
+
+
+def set_manuscript_cache_db(path) -> None:
+    """启用磁盘翻译记忆；传 None 则只用内存热缓存。"""
+    global _MANUSCRIPT_DB_PATH, _MANUSCRIPT_DB_CONN, _MANUSCRIPT_DB_OK
+    with _MANUSCRIPT_CACHE_LOCK:
+        _MANUSCRIPT_DB_PATH = str(path) if path else None
+        if _MANUSCRIPT_DB_CONN is not None:
+            try:
+                _MANUSCRIPT_DB_CONN.close()
+            except Exception:
+                pass
+            _MANUSCRIPT_DB_CONN = None
+        _MANUSCRIPT_DB_OK = False
+        if not _MANUSCRIPT_DB_PATH:
+            return
+        try:
+            # check_same_thread=False：连接始终在 _MANUSCRIPT_CACHE_LOCK 内使用。
+            conn = sqlite3.connect(_MANUSCRIPT_DB_PATH, check_same_thread=False)
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS manuscript_memory ("
+                " normalized_key TEXT NOT NULL,"
+                " target_lang TEXT NOT NULL,"
+                " translation TEXT NOT NULL,"
+                " PRIMARY KEY (normalized_key, target_lang))"
+            )
+            conn.commit()
+            _MANUSCRIPT_DB_CONN = conn
+            _MANUSCRIPT_DB_OK = True
+        except Exception:
+            _MANUSCRIPT_DB_OK = False
+
+
+def _db_flush(items) -> None:
+    if not _MANUSCRIPT_DB_OK or not items:
+        return
+    try:
+        _MANUSCRIPT_DB_CONN.executemany(
+            "INSERT OR REPLACE INTO manuscript_memory"
+            " (normalized_key, target_lang, translation) VALUES (?, ?, ?)",
+            [(key, lang, value) for (key, lang), value in items],
+        )
+        _MANUSCRIPT_DB_CONN.commit()
+    except Exception:
+        pass
+
+
+def _db_get(key: str, target_lang: str) -> str | None:
+    if not _MANUSCRIPT_DB_OK:
+        return None
+    try:
+        row = _MANUSCRIPT_DB_CONN.execute(
+            "SELECT translation FROM manuscript_memory"
+            " WHERE normalized_key = ? AND target_lang = ?",
+            (key, target_lang),
+        ).fetchone()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+def _evict_oldest(count: int) -> None:
+    """把最旧的一批先落盘，再从热缓存移除，为条目腾位置。"""
+    items = list(_MANUSCRIPT_CACHE.items())[:count]
+    if not items:
+        return
+    _db_flush(items)
+    for key in [entry[0] for entry in items]:
+        _MANUSCRIPT_CACHE.pop(key, None)
 
 
 def detect_source_language(text: str) -> str:
@@ -61,6 +136,13 @@ def lookup_manuscript_cache(text: str, target_lang: str) -> str | None:
         exact = _MANUSCRIPT_CACHE.get((key, target_lang))
         if exact is not None:
             return exact
+        # 内存未命中时从磁盘记忆加载精确条目，并放回热缓存。
+        disk = _db_get(key, target_lang)
+        if disk is not None:
+            if len(_MANUSCRIPT_CACHE) >= _MANUSCRIPT_CACHE_MAX:
+                _evict_oldest(_MANUSCRIPT_FLUSH_BATCH)
+            _MANUSCRIPT_CACHE[(key, target_lang)] = disk
+            return disk
         if len(key) < 4:
             return None
         best: str | None = None
@@ -86,9 +168,13 @@ def store_manuscript_cache(text: str, target_lang: str, translation: str) -> Non
     if len(key) < 2 or not translation.strip():
         return
     with _MANUSCRIPT_CACHE_LOCK:
+        # 热缓存满了：先把最旧一批落盘并移除，再写入新条目。
         if len(_MANUSCRIPT_CACHE) >= _MANUSCRIPT_CACHE_MAX:
-            return
-        _MANUSCRIPT_CACHE[(key, target_lang)] = translation.strip()
+            _evict_oldest(_MANUSCRIPT_FLUSH_BATCH)
+        value = translation.strip()
+        _MANUSCRIPT_CACHE[(key, target_lang)] = value
+        if _MANUSCRIPT_DB_OK:
+            _db_flush([((key, target_lang), value)])
 
 
 class DeepSeekTranslator:

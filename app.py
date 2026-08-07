@@ -58,10 +58,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from xfyun_client import XfyunInterpreter
+from xfyun_client import XfyunInterpreter, set_manuscript_cache_db
 
-APP_NAME = "ísmolar 同声传译 · v1.9.5 简洁界面版"
-APP_VERSION = "1.9.5"
+APP_NAME = "ísmolar 同声传译 · v1.9.6 简洁界面版"
+APP_VERSION = "1.9.6"
 
 TOKENS = {
     "bg": "#F6F9FD",
@@ -2276,6 +2276,11 @@ def main() -> int:
     app.setOrganizationName("ismolar")
     app.setStyle("Fusion")
     app.setStyleSheet(stylesheet())
+    try:
+        # 翻译记忆磁盘持久化：内存热缓存满时落盘，重启后记忆保留。
+        set_manuscript_cache_db(CONFIG_DIR / "manuscript_memory.db")
+    except Exception:
+        pass
     icon_path = resource_path("assets/app_icon.png")
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
