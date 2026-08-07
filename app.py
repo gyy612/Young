@@ -58,8 +58,8 @@ from PySide6.QtWidgets import (
 
 from xfyun_client import XfyunInterpreter, set_manuscript_cache_db
 
-APP_NAME = "ísmolar 同声传译 · v1.9.11 简洁界面版"
-APP_VERSION = "1.9.11"
+APP_NAME = "ísmolar 同声传译 · v1.9.12 简洁界面版"
+APP_VERSION = "1.9.12"
 
 TOKENS = {
     "bg": "#F6F9FD",
@@ -2098,6 +2098,8 @@ class MainWindow(QMainWindow):
         self._launch_client()
 
     def _launch_client(self) -> None:
+        if self._ending_session:
+            return
         self.client_generation += 1
         session_id = self.client_generation
         try:
@@ -2117,6 +2119,7 @@ class MainWindow(QMainWindow):
                 input_device=self._selected_device(),
                 on_event=self.events.put,
                 session_id=session_id,
+                initial_segments=self.session_segments,
             )
             self.client.start()
             self.start_button.setEnabled(False)
@@ -2330,24 +2333,31 @@ class MainWindow(QMainWindow):
                 text = str(event.get("text", "未知错误"))
                 code = int(event.get("code", 0) or 0)
                 append_log(text)
-                if code == 10008 and not self._ending_session and self._service_retry_count < 3:
+                transient = (
+                    code == 10008
+                    or "WebSocket 连接错误" in text
+                    or "ping" in text
+                )
+                if transient and self._ending_session:
+                    continue
+                if transient and self._service_retry_count < 3:
                     self._service_retry_count += 1
                     attempt = self._service_retry_count
                     wait_ms = 1500 * attempt
                     self.client = None
                     # 立即提高 generation，使旧连接后续的 closed 事件失效。
                     self.client_generation += 1
-                    message = f"讯飞服务实例暂时不可用，正在自动重连（{attempt}/3）…"
+                    message = f"网络连接中断，正在自动重连（{attempt}/3）…"
                     self.status_label.setText(message)
                     if self.overlay is not None:
                         self.overlay.set_status(message)
                     QTimer.singleShot(wait_ms, self._launch_client)
                     continue
-                if code == 10008:
+                if transient:
                     friendly = (
-                        "讯飞服务实例暂时不可用，软件已经自动重试 3 次。\n\n"
-                        "这通常属于讯飞服务容量或服务实例状态问题，并非麦克风故障。"
-                        "请稍后重新开始；若持续出现，请在讯飞控制台确认同声传译服务状态和授权。"
+                        "网络连接中断，软件已经自动重试 3 次仍未恢复。\n\n"
+                        "请检查网络（Wi-Fi / 防火墙 / 代理 / VPN）后重新开始；"
+                        "已识别的内容不会丢失，可点击停止保存文档。"
                     )
                 else:
                     friendly = text

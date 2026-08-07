@@ -460,6 +460,7 @@ class XfyunInterpreter:
         play_tts: bool = False,
         input_device: Optional[int] = None,
         session_id: int = 0,
+        initial_segments: Optional[list[dict]] = None,
     ) -> None:
         self.app_id = app_id.strip()
         self.api_key = api_key.strip()
@@ -476,6 +477,8 @@ class XfyunInterpreter:
         self.play_tts = bool(play_tts)
         self.input_device = input_device
         self.session_id = int(session_id)
+        # 断线自动重连时，新实例从已有段落继续，会议内容不丢失。
+        self._initial_segments = [dict(segment) for segment in (initial_segments or [])]
 
         self._ws: Optional[websocket.WebSocketApp] = None
         self._running = threading.Event()
@@ -891,6 +894,10 @@ class XfyunInterpreter:
             self._ordered_interim_source = ""
             self._ordered_interim_translation = ""
             self._segment_seq = 0
+        if self._initial_segments:
+            with self._ordered_lock:
+                self._ordered_segments = [dict(segment) for segment in self._initial_segments]
+                self._segment_seq = len(self._ordered_segments)
         with self._english_buffer_lock:
             self._english_sentence_buffer = ""
             self._english_commit_generation += 1
