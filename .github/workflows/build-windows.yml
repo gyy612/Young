@@ -1,0 +1,28 @@
+name: build-windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Build portable EXE
+        run: python -m PyInstaller --noconfirm --clean ismolar_windows.spec
+
+      - name: Upload portable EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: ismolar-interpreter-win64-v1.9.5
+          path: dist/ismolar-interpreter.exe

@@ -1,0 +1,20 @@
+完整文件清单
+
+app.py                         主程序（全新界面）
+xfyun_client.py                讯飞识别与 DeepSeek 翻译
+requirements.txt               Python 依赖
+ismolar_local.spec             Mac App 打包配置
+config.example.json            空白配置示例
+assets/app_icon.png            程序图标
+assets/app_icon.icns           macOS 图标
+scripts/build_macos.command    实际打包脚本
+ismolar_windows.spec           Windows 绿色版 EXE 打包配置
+scripts/build_windows.bat      Windows 一键打包（绿色版 + 可选安装包）
+scripts/installer_windows.iss  Windows Inno Setup 安装包脚本
+.github/workflows/build-windows.yml  GitHub Actions 自动出 EXE
+assets/app_icon.ico            Windows 图标
+①一键制作DMG.command           一键生成 DMG
+②先测试功能.command            源码测试入口
+③重置麦克风权限.command
+开始这里.txt
+使用说明.txt

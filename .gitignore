@@ -1,0 +1,10 @@
+.venv-build/
+.venv-build-win/
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+本地打包日志-*.txt
+源码测试日志-*.txt
+.DS_Store
