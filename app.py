@@ -60,8 +60,8 @@ from PySide6.QtWidgets import (
 
 from xfyun_client import XfyunInterpreter, set_manuscript_cache_db
 
-APP_NAME = "ísmolar 同声传译 · v1.9.6 简洁界面版"
-APP_VERSION = "1.9.6"
+APP_NAME = "ísmolar 同声传译 · v1.9.7 简洁界面版"
+APP_VERSION = "1.9.7"
 
 TOKENS = {
     "bg": "#F6F9FD",

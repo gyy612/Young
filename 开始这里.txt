@@ -1,4 +1,4 @@
-ísmolar 同声传译 v1.9.6｜简洁界面版
+ísmolar 同声传译 v1.9.7｜简洁界面版
 
 本版变化
 ====================
@@ -30,10 +30,10 @@
 3. 连续说 5 句英文后停止，确认 5 句译文全部出现在文档中。
 
 正确标题：
-ísmolar 同声传译 · v1.9.6 简洁界面版
+ísmolar 同声传译 · v1.9.7 简洁界面版
 
 制作 DMG：
 ①一键制作DMG.command
 
 生成：
-dist/ismolar-interpreter-macOS-local-v1.9.6.dmg
+dist/ismolar-interpreter-macOS-local-v1.9.7.dmg

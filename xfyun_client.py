@@ -59,6 +59,10 @@ def set_manuscript_cache_db(path) -> None:
         if not _MANUSCRIPT_DB_PATH:
             return
         try:
+            # 首次运行目录可能不存在；Windows 下 %APPDATA% 同理。
+            db_dir = os.path.dirname(_MANUSCRIPT_DB_PATH)
+            if db_dir:
+                os.makedirs(db_dir, exist_ok=True)
             # check_same_thread=False：连接始终在 _MANUSCRIPT_CACHE_LOCK 内使用。
             conn = sqlite3.connect(_MANUSCRIPT_DB_PATH, check_same_thread=False)
             conn.execute(
@@ -69,6 +73,13 @@ def set_manuscript_cache_db(path) -> None:
                 " PRIMARY KEY (normalized_key, target_lang))"
             )
             conn.commit()
+            if platform.system() != "Windows":
+                # macOS 收紧为仅本人可读写；Windows 用 %APPDATA% 的 ACL 天然私有，
+                # os.chmod 只影响只读位、无实际意义，故跳过。
+                try:
+                    os.chmod(_MANUSCRIPT_DB_PATH, 0o600)
+                except OSError:
+                    pass
             _MANUSCRIPT_DB_CONN = conn
             _MANUSCRIPT_DB_OK = True
         except Exception:
