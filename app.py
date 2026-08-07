@@ -21,7 +21,6 @@ from PySide6.QtGui import (
     QColor,
     QCloseEvent,
     QFont,
-    QFontDatabase,
     QFontMetrics,
     QIcon,
     QMouseEvent,
@@ -60,8 +59,8 @@ from PySide6.QtWidgets import (
 
 from xfyun_client import XfyunInterpreter, set_manuscript_cache_db
 
-APP_NAME = "ísmolar 同声传译 · v1.9.8 简洁界面版"
-APP_VERSION = "1.9.8"
+APP_NAME = "ísmolar 同声传译 · v1.9.9 简洁界面版"
+APP_VERSION = "1.9.9"
 
 TOKENS = {
     "bg": "#F6F9FD",
@@ -91,6 +90,7 @@ DEFAULT_CONFIG = {
     "translation_interval_mode": "adaptive",
     "background_opacity": 45,
     "subtitle_font": "Microsoft YaHei",
+    "subtitle_font_weight": 400,
     "chinese_size": 34,
     "english_size": 32,
     "subtitle_color": "#FFFFFF",
@@ -447,20 +447,18 @@ class OverlaySettingsDialog(QDialog):
         self.opacity.setValue(int(settings.get("background_opacity", 45)))
         form.addRow("背景透明度", self.opacity)
 
-        self.font = QComboBox()
-        families = QFontDatabase.families()
-        preferred_fonts = (
-            "Microsoft YaHei", "微软雅黑", "PingFang SC", "SF Pro Display", "Arial"
-        )
-        for family in preferred_fonts:
-            if family in families:
-                self.font.addItem(family)
-        if self.font.count() == 0:
-            self.font.addItems(families[:100])
-        font_index = self.font.findText(str(settings.get("subtitle_font", "Microsoft YaHei")))
-        if font_index >= 0:
-            self.font.setCurrentIndex(font_index)
-        form.addRow("字幕字体", self.font)
+        # 字幕字体固定为微软雅黑，只保留字重选择。
+        font_label = QLabel("微软雅黑")
+        font_label.setObjectName("settingsLabel")
+        form.addRow("字幕字体", font_label)
+
+        self.weight = QComboBox()
+        self.weight.addItem("常规", 400)
+        self.weight.addItem("中等", 500)
+        self.weight.addItem("加粗", 700)
+        weight_index = self.weight.findData(int(settings.get("subtitle_font_weight", 400)))
+        self.weight.setCurrentIndex(max(0, weight_index))
+        form.addRow("字重", self.weight)
 
         self.cn_size = QSpinBox()
         self.cn_size.setRange(12, 96)
@@ -521,7 +519,8 @@ class OverlaySettingsDialog(QDialog):
             "translation_direction": str(self.direction.currentData() or "zh_en"),
             "play_tts": self.tts.isChecked(),
             "background_opacity": self.opacity.value(),
-            "subtitle_font": self.font.currentText() or "Microsoft YaHei",
+            "subtitle_font": "Microsoft YaHei",
+            "subtitle_font_weight": int(self.weight.currentData() or 400),
             "chinese_size": self.cn_size.value(),
             "english_size": self.en_size.value(),
             "subtitle_color": self._text_color.name().upper(),
@@ -545,6 +544,8 @@ class OutlinedTextWidget(QWidget):
         self._top_padding = 8
         self._bottom_safe_padding = 20
 
+        self._weight = QFont.Weight.Normal
+
         self.setObjectName("subtitleText")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAutoFillBackground(False)
@@ -558,12 +559,14 @@ class OutlinedTextWidget(QWidget):
         self,
         family: str,
         size: int,
+        weight: int,
         color: QColor,
         outline_color: QColor,
         outline_enabled: bool,
     ) -> None:
         self._family = family
         self._size = int(size)
+        self._weight = QFont.Weight(int(weight))
         self._color = QColor(color)
         self._outline_color = QColor(outline_color)
         self._outline_enabled = bool(outline_enabled)
@@ -610,6 +613,7 @@ class OutlinedTextWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         font = QFont(self._family, self._size)
+        font.setWeight(self._weight)
         font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
         painter.setFont(font)
 
@@ -684,7 +688,9 @@ class SubtitleOverlay(QMainWindow):
         self._timing_mode = str(config.get("translation_interval_mode", "adaptive"))
         self._play_tts = bool(config.get("play_tts", False))
         self._opacity = int(config.get("background_opacity", 45))
-        self._font_family = str(config.get("subtitle_font", "Microsoft YaHei"))
+        # 字幕字体固定为微软雅黑，只保留字重可调。
+        self._font_family = "Microsoft YaHei"
+        self._font_weight = int(config.get("subtitle_font_weight", 400))
         self._cn_size_value = int(config.get("chinese_size", 34))
         self._en_size_value = int(config.get("english_size", 32))
         self._text_color = QColor(config.get("subtitle_color", "#FFFFFF"))
@@ -810,7 +816,8 @@ class SubtitleOverlay(QMainWindow):
         self._timing_mode = str(config.get("translation_interval_mode", self._timing_mode))
         self._play_tts = bool(config.get("play_tts", self._play_tts))
         self._opacity = int(config.get("background_opacity", self._opacity))
-        self._font_family = str(config.get("subtitle_font", self._font_family))
+        self._font_family = "Microsoft YaHei"
+        self._font_weight = int(config.get("subtitle_font_weight", self._font_weight))
         self._cn_size_value = int(config.get("chinese_size", self._cn_size_value))
         self._en_size_value = int(config.get("english_size", self._en_size_value))
         self._text_color = QColor(str(config.get("subtitle_color", self._text_color.name())))
@@ -833,6 +840,7 @@ class SubtitleOverlay(QMainWindow):
             "show_chinese": self._display_mode != "translation" or self._target_language() == "zh",
             "background_opacity": self._opacity,
             "subtitle_font": self._font_family,
+            "subtitle_font_weight": self._font_weight,
             "chinese_size": self._cn_size_value,
             "english_size": self._en_size_value,
             "subtitle_color": self._text_color.name().upper(),
@@ -913,6 +921,7 @@ class SubtitleOverlay(QMainWindow):
         widget.set_style_options(
             self._font_family,
             size,
+            self._font_weight,
             self._text_color,
             self._outline_color,
             self._outline_enabled,
@@ -995,6 +1004,7 @@ class SubtitleOverlay(QMainWindow):
             self._play_tts = bool(values["play_tts"])
             self._opacity = int(values["background_opacity"])
             self._font_family = str(values["subtitle_font"])
+            self._font_weight = int(values["subtitle_font_weight"])
             self._cn_size_value = int(values["chinese_size"])
             self._en_size_value = int(values["english_size"])
             self._text_color = QColor(str(values["subtitle_color"]))
