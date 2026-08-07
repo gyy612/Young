@@ -58,8 +58,8 @@ from PySide6.QtWidgets import (
 
 from xfyun_client import XfyunInterpreter, set_manuscript_cache_db
 
-APP_NAME = "ísmolar 同声传译 · v1.9.10 简洁界面版"
-APP_VERSION = "1.9.10"
+APP_NAME = "ísmolar 同声传译 · v1.9.11 简洁界面版"
+APP_VERSION = "1.9.11"
 
 TOKENS = {
     "bg": "#F6F9FD",
@@ -1498,26 +1498,30 @@ class BilingualDocumentWindow(QMainWindow):
                 if path.suffix.lower() != ".docx":
                     path = path.with_suffix(".docx")
                 from docx import Document
-                from docx.enum.table import WD_TABLE_ALIGNMENT
 
                 document = Document()
                 document.add_heading("ísmolar 同声传译 · 中英对照文档", level=0)
                 document.add_paragraph(self.meta_label.text())
-                table = document.add_table(rows=1, cols=2)
-                table.alignment = WD_TABLE_ALIGNMENT.CENTER
-                table.style = "Table Grid"
-                table.rows[0].cells[0].text = "中文"
-                table.rows[0].cells[1].text = "English"
-                for segment in self._segments:
+                for index, segment in enumerate(self._segments, start=1):
                     source = str(segment.get("source", "")).strip()
                     translation = str(segment.get("translation", "")).strip()
                     if str(segment.get("source_language", "zh")) == "en":
                         chinese, english = translation, source
                     else:
                         chinese, english = source, translation
-                    cells = table.add_row().cells
-                    cells[0].text = chinese
-                    cells[1].text = english
+                    # 每一段：中文在上、英文在下，不用表格。
+                    number_paragraph = document.add_paragraph()
+                    number_paragraph.add_run(f"{index:02d}").bold = True
+
+                    chinese_paragraph = document.add_paragraph()
+                    chinese_paragraph.add_run("中文：").bold = True
+                    chinese_paragraph.add_run(chinese)
+
+                    english_paragraph = document.add_paragraph()
+                    english_paragraph.add_run("English: ").bold = True
+                    english_paragraph.add_run(english)
+
+                    document.add_paragraph("")
                 document.save(path)
         except Exception as exc:
             QMessageBox.critical(self, "保存失败", str(exc))
