@@ -58,8 +58,8 @@ from PySide6.QtWidgets import (
 
 from xfyun_client import XfyunInterpreter, set_manuscript_cache_db
 
-APP_NAME = "ísmolar 同声传译 · v1.9.12 简洁界面版"
-APP_VERSION = "1.9.12"
+APP_NAME = "ísmolar 同声传译 · v1.9.13 简洁界面版"
+APP_VERSION = "1.9.13"
 
 TOKENS = {
     "bg": "#F6F9FD",
@@ -338,8 +338,6 @@ class CredentialDialog(QDialog):
         self.api_secret = QLineEdit(str(config.get("api_secret", "")))
         self.deepseek_api_key = QLineEdit(str(config.get("deepseek_api_key", "")))
         self.deepseek_model = QLineEdit(str(config.get("deepseek_model", "deepseek-v4-flash")))
-        for widget in (self.api_key, self.api_secret, self.deepseek_api_key):
-            widget.setEchoMode(QLineEdit.EchoMode.Password)
         form.addRow("讯飞 APPID", self.app_id)
         form.addRow("讯飞 APIKey", self.api_key)
         form.addRow("讯飞 APISecret", self.api_secret)
