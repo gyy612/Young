@@ -426,6 +426,7 @@ class AzureInterpreter:
         translations = dict(getattr(result, "translations", {}) or {})
         source_lang, translation = self._pick_source_translation(text, translations, result)
         target_lang = "zh-CN" if source_lang == "en" else "en-US"
+        raw_translation = translation
         cached = lookup_manuscript_cache(text, target_lang)
         if cached:
             translation = cached
@@ -433,6 +434,14 @@ class AzureInterpreter:
             store_manuscript_cache(text, target_lang, translation)
         # 词条最后应用：无论译文来自 Azure 还是翻译记忆，都强制走固定译法。
         translation = self._apply_glossary_logged(text, translation)
+        self._log(
+            f"识别结果：{source_lang} {text.strip()[:50]!r} → {raw_translation.strip()[:60]!r}"
+            + (
+                f"（固定翻译后：{translation.strip()[:60]!r}）"
+                if translation != raw_translation
+                else ""
+            )
+        )
 
         with self._ordered_lock:
             self._current_source_language = source_lang

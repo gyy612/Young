@@ -374,21 +374,22 @@ class DeepSeekTranslator:
         # 原文出现右侧词 → 译文强制用左侧词。一份词条两个方向都生效。
         result = translated
         for source, target in self.glossary_entries:
-            if source.casefold() in text.casefold():
-                result = re.sub(
-                    re.escape(source),
-                    target,
-                    result,
-                    flags=re.IGNORECASE,
-                )
-            elif target.casefold() in text.casefold():
-                result = re.sub(
-                    re.escape(target),
-                    source,
-                    result,
-                    flags=re.IGNORECASE,
-                )
+            if self._term_in_text(source, text):
+                result = self._replace_term(source, target, result)
+            elif self._term_in_text(target, text):
+                result = self._replace_term(target, source, result)
         return result
+
+    @staticmethod
+    def _term_in_text(term: str, text: str) -> bool:
+        # 忽略大小写与空白差异（识别结果可能把 “Barley EGF” 识别成 “Barley  EGF”）。
+        return " ".join(term.split()).casefold() in " ".join(text.split()).casefold()
+
+    @staticmethod
+    def _replace_term(term: str, replacement: str, translated: str) -> str:
+        # 用 \s+ 匹配词间空白变体，词序不变。
+        pattern = re.escape(" ".join(term.split())).replace(r"\ ", r"\s+")
+        return re.sub(pattern, replacement, translated, flags=re.IGNORECASE)
 
     def _reference_sentences(self, max_sentences: int = 300) -> list[str]:
         parts = re.split(r"[。！？!?；;.\n]+", self.reference_text)
