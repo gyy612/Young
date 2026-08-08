@@ -381,15 +381,33 @@ class DeepSeekTranslator:
         return result
 
     @staticmethod
+    def _normalize_term(text: str) -> str:
+        # 去掉大小写、空格与标点，只留字母数字：
+        # BIOEFFECT / bio effect / bio-effect / Bio  Effect 视为同一个词。
+        return "".join(ch for ch in str(text).casefold() if ch.isalnum())
+
+    @staticmethod
     def _term_in_text(term: str, text: str) -> bool:
-        # 忽略大小写与空白差异（识别结果可能把 “Barley EGF” 识别成 “Barley  EGF”）。
-        return " ".join(term.split()).casefold() in " ".join(text.split()).casefold()
+        norm = DeepSeekTranslator._normalize_term(term)
+        return bool(norm) and norm in DeepSeekTranslator._normalize_term(text)
 
     @staticmethod
     def _replace_term(term: str, replacement: str, translated: str) -> str:
-        # 用 \s+ 匹配词间空白变体，词序不变。
-        pattern = re.escape(" ".join(term.split())).replace(r"\ ", r"\s+")
-        return re.sub(pattern, replacement, translated, flags=re.IGNORECASE)
+        norm = DeepSeekTranslator._normalize_term(term)
+        if not norm:
+            return translated
+        if not re.search(r"[A-Za-z0-9]", norm):
+            # 中文词：直接按原样替换。
+            return re.sub(re.escape(term), replacement, translated)
+        # 拉丁词：替换译文里“归一化后等于词条”的片段，容忍空格/连字符/大小写差异。
+        pattern = re.compile(r"[A-Za-z0-9]+(?:[\s\-_.'’]+[A-Za-z0-9]+)*")
+
+        def _sub(match) -> str:
+            if DeepSeekTranslator._normalize_term(match.group(0)) == norm:
+                return replacement
+            return match.group(0)
+
+        return pattern.sub(_sub, translated)
 
     def _reference_sentences(self, max_sentences: int = 300) -> list[str]:
         parts = re.split(r"[。！？!?；;.\n]+", self.reference_text)
