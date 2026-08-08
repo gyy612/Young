@@ -78,14 +78,14 @@ TOKENS = {
 }
 
 DEFAULT_CONFIG = {
-    "provider": "xfyun",
+    "provider": "azure",
     "app_id": "",
     "api_key": "",
     "api_secret": "",
     "deepseek_api_key": "",
     "deepseek_model": "deepseek-v4-flash",
     "azure_key": "",
-    "azure_region": "westeurope",
+    "azure_region": "swedencentral",
     "azure_voice_zh": "zh-CN-XiaoxiaoNeural",
     "azure_voice_en": "en-US-AriaNeural",
     "translation_direction": "auto",
@@ -334,7 +334,7 @@ class CredentialDialog(QDialog):
         layout.addWidget(title)
         note = QLabel(
             "密钥只保存在当前电脑，不会写入 GitHub 仓库。\n"
-            "冰岛使用建议选择 Azure 欧洲区域（westeurope / northeurope），延迟远低于国内节点。"
+            "冰岛使用建议选择 Azure 欧洲区域（swedencentral / westeurope / northeurope）。"
         )
         note.setObjectName("mutedLabel")
         layout.addWidget(note)
@@ -342,17 +342,6 @@ class CredentialDialog(QDialog):
         form = QFormLayout()
         form.setHorizontalSpacing(18)
         form.setVerticalSpacing(14)
-        self.provider = QComboBox()
-        self.provider.addItem("讯飞同传（国内节点）", "xfyun")
-        self.provider.addItem("Azure AI Speech（欧洲节点，冰岛推荐）", "azure")
-        provider_index = self.provider.findData(str(config.get("provider", "xfyun")))
-        self.provider.setCurrentIndex(max(0, provider_index))
-        form.addRow("服务提供商", self.provider)
-        self.app_id = QLineEdit(str(config.get("app_id", "")))
-        self.api_key = QLineEdit(str(config.get("api_key", "")))
-        self.api_secret = QLineEdit(str(config.get("api_secret", "")))
-        self.deepseek_api_key = QLineEdit(str(config.get("deepseek_api_key", "")))
-        self.deepseek_model = QLineEdit(str(config.get("deepseek_model", "deepseek-v4-flash")))
         self.azure_key = QLineEdit(str(config.get("azure_key", "")))
         self.azure_region = QComboBox()
         self.azure_region.setEditable(True)
@@ -375,11 +364,6 @@ class CredentialDialog(QDialog):
             self.azure_region.setEditText(region_value)
         else:
             self.azure_region.setCurrentIndex(region_index)
-        form.addRow("讯飞 APPID", self.app_id)
-        form.addRow("讯飞 APIKey", self.api_key)
-        form.addRow("讯飞 APISecret", self.api_secret)
-        form.addRow("DeepSeek API Key", self.deepseek_api_key)
-        form.addRow("DeepSeek 模型", self.deepseek_model)
         form.addRow("Azure Key", self.azure_key)
         form.addRow("Azure 区域", self.azure_region)
         layout.addLayout(form)
@@ -399,12 +383,12 @@ class CredentialDialog(QDialog):
             or ""
         ).strip()
         return {
-            "provider": str(self.provider.currentData() or "xfyun"),
-            "app_id": self.app_id.text().strip(),
-            "api_key": self.api_key.text().strip(),
-            "api_secret": self.api_secret.text().strip(),
-            "deepseek_api_key": self.deepseek_api_key.text().strip(),
-            "deepseek_model": self.deepseek_model.text().strip() or "deepseek-v4-flash",
+            "provider": "azure",
+            "app_id": "",
+            "api_key": "",
+            "api_secret": "",
+            "deepseek_api_key": "",
+            "deepseek_model": "deepseek-v4-flash",
             "azure_key": self.azure_key.text().strip(),
             "azure_region": region,
         }
@@ -1936,16 +1920,11 @@ class MainWindow(QMainWindow):
         dialog = CredentialDialog(self.config, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             values = dialog.values()
-            if values.get("provider", "xfyun") == "azure":
-                if not values.get("azure_key") or not values.get("azure_region"):
-                    QMessageBox.warning(
-                        self, "缺少信息", "Azure 密钥（Key）和区域（Region）都必须填写。"
-                    )
-                    return
-            else:
-                if not all(values.get(key) for key in ("app_id", "api_key", "api_secret")):
-                    QMessageBox.warning(self, "缺少信息", "讯飞三项接口信息都必须填写。")
-                    return
+            if not values.get("azure_key") or not values.get("azure_region"):
+                QMessageBox.warning(
+                    self, "缺少信息", "Azure 密钥（Key）和区域（Region）都必须填写。"
+                )
+                return
             self.config.update(values)
             save_config(self.config)
             self._refresh_api_state()
