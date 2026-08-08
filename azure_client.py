@@ -174,6 +174,7 @@ class AzureInterpreter:
         recognizer.session_started.connect(self._on_session_started)
         recognizer.session_stopped.connect(self._on_session_stopped)
         self._recognizer = recognizer
+        self._add_phrase_hints(recognizer, speech)
 
         self._running.set()
         if self.deepseek.has_context and self.deepseek.api_key:
@@ -306,6 +307,34 @@ class AzureInterpreter:
                 fp.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {text}\n")
         except Exception:
             pass
+
+    def _add_phrase_hints(self, recognizer: Any, speech: Any) -> None:
+        """把固定翻译里的词注入 Azure 短语提示，避免品牌名/人名被识别引擎听错。"""
+        try:
+            phrases: list[str] = []
+            seen: set[str] = set()
+            for entry in self.deepseek.glossary_entries:
+                for term in entry[:2]:
+                    term = str(term or "").strip()
+                    if not term or len(term) > 40:
+                        continue
+                    key = term.casefold()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    phrases.append(term)
+                    if len(phrases) >= 300:
+                        break
+                if len(phrases) >= 300:
+                    break
+            if not phrases:
+                return
+            grammar = speech.PhraseListGrammar.from_recognizer(recognizer)
+            for phrase in phrases:
+                grammar.addPhrase(phrase)
+            self._log(f"已注入 {len(phrases)} 个短语提示：{phrases[:8]}…")
+        except Exception as exc:
+            self._log(f"短语提示注入失败：{exc}")
 
     def _apply_glossary_logged(self, text: str, translation: str) -> str:
         original = translation
