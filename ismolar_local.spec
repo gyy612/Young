@@ -1,14 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 block_cipher = None
 
 a = Analysis(
     ["app.py"],
     pathex=[],
-    binaries=collect_dynamic_libs("sounddevice"),
-    datas=[("assets", "assets")],
+    binaries=collect_dynamic_libs("sounddevice")
+    + collect_dynamic_libs("azure.cognitiveservices.speech"),
+    datas=[("assets", "assets")]
+    + collect_data_files("azure.cognitiveservices.speech"),
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
