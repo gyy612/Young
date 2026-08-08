@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import platform
+import re
 import threading
 import time
 from pathlib import Path
@@ -315,26 +316,61 @@ class AzureInterpreter:
             seen: set[str] = set()
             for entry in self.deepseek.glossary_entries:
                 for term in entry[:2]:
-                    term = str(term or "").strip()
-                    if not term or len(term) > 40:
-                        continue
-                    key = term.casefold()
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    phrases.append(term)
-                    if len(phrases) >= 300:
+                    for variant in self._phrase_variants(term):
+                        key = variant.casefold()
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        phrases.append(variant)
+                        if len(phrases) >= 400:
+                            break
+                    if len(phrases) >= 400:
                         break
-                if len(phrases) >= 300:
+                if len(phrases) >= 400:
                     break
             if not phrases:
                 return
             grammar = speech.PhraseListGrammar.from_recognizer(recognizer)
             for phrase in phrases:
                 grammar.addPhrase(phrase)
-            self._log(f"已注入 {len(phrases)} 个短语提示：{phrases[:8]}…")
+            self._log(f"已注入 {len(phrases)} 个短语提示（含发音变体）：{phrases[:8]}…")
         except Exception as exc:
             self._log(f"短语提示注入失败：{exc}")
+
+    @staticmethod
+    def _phrase_variants(term: str) -> list[str]:
+        """为拉丁词自动生成自然发音变体，提高第一次识别命中率。
+        BIOEFFECT → BIOEFFECT / Bio Effect / Bio-Effect / bioeffect / bio effect"""
+        term = str(term or "").strip()
+        if not term:
+            return []
+        variants = [term]
+        letters = "".join(ch for ch in term if ch.isalnum())
+        if len(letters) >= 4 and re.search(r"[A-Za-z]", letters):
+            parts = re.split(r"(?<=[a-z0-9])(?=[A-Z])", letters)
+            if len(parts) > 1:
+                variants.append(" ".join(parts))
+                variants.append("-".join(parts))
+                variants.append("".join(parts).lower())
+                variants.append(" ".join(parts).lower())
+            # 全大写词拆不出驼峰时，尝试在常见词尾前加空格：
+            # BIOEFFECT → BIO EFFECT（更接近自然发音，便于识别）
+            lower = letters.casefold()
+            for suffix in ("effect", "factor", "growth", "system"):
+                if lower.endswith(suffix) and len(letters) > len(suffix) + 1:
+                    split_at = len(letters) - len(suffix)
+                    variants.append(letters[:split_at] + " " + letters[split_at:])
+                    variants.append(letters[:split_at] + "-" + letters[split_at:])
+                    break
+        seen: set[str] = set()
+        out: list[str] = []
+        for variant in variants:
+            variant = variant.strip()
+            key = variant.casefold()
+            if variant and key not in seen and len(variant) <= 40:
+                seen.add(key)
+                out.append(variant)
+        return out
 
     def _apply_glossary_logged(self, text: str, translation: str) -> str:
         original = translation
