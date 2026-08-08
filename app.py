@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -1817,6 +1818,19 @@ class MainWindow(QMainWindow):
         self.materials_status.setObjectName("mutedLabel")
         row.addWidget(self.materials_status, 1)
         root.addLayout(row)
+        self.prewarm_progress = QProgressBar()
+        self.prewarm_progress.setObjectName("prewarmProgress")
+        self.prewarm_progress.setRange(0, 100)
+        self.prewarm_progress.setValue(0)
+        self.prewarm_progress.setFormat("参考稿预翻译中 %v/%m 段")
+        self.prewarm_progress.setTextVisible(True)
+        self.prewarm_progress.setFixedHeight(14)
+        self.prewarm_progress.setVisible(False)
+        progress_row = QHBoxLayout()
+        progress_row.setSpacing(8)
+        progress_row.addSpacing(66)
+        progress_row.addWidget(self.prewarm_progress, 1)
+        root.addLayout(progress_row)
         row = QHBoxLayout()
         row.setSpacing(8)
         row.addSpacing(66)
@@ -2158,6 +2172,9 @@ class MainWindow(QMainWindow):
                 self.events.put({"type": "status", "text": text, "state": "translating"})
 
         def on_progress(done: int, total: int) -> None:
+            self.events.put(
+                {"type": "prewarm_progress", "done": int(done), "total": int(total)}
+            )
             if done == total:
                 emit(f"参考稿预翻译完成（{total} 段）")
 
@@ -2451,6 +2468,17 @@ class MainWindow(QMainWindow):
                 self.status_label.setText(text)
                 if self.overlay is not None:
                     self.overlay.set_status(text)
+            elif event_type == "prewarm_progress":
+                done = int(event.get("done", 0) or 0)
+                total = int(event.get("total", 0) or 0)
+                if total <= 0:
+                    continue
+                self.prewarm_progress.setRange(0, total)
+                self.prewarm_progress.setValue(done)
+                self.prewarm_progress.setFormat(f"参考稿预翻译中 {done}/{total} 段")
+                self.prewarm_progress.setVisible(done < total)
+                if done >= total:
+                    QTimer.singleShot(2500, self.prewarm_progress.hide)
             elif event_type == "session_finalized":
                 segments = event.get("segments", [])
                 if isinstance(segments, list):

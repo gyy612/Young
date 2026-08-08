@@ -414,6 +414,8 @@ class DeepSeekTranslator:
         if not sentences or not self.api_key:
             return
         total = len(sentences)
+        if on_progress is not None:
+            on_progress(0, total)
         done = 0
         progress_lock = threading.Lock()
 
