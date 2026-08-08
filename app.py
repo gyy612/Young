@@ -31,6 +31,7 @@ from PySide6.QtGui import (
     QTextCursor,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QButtonGroup,
     QCheckBox,
@@ -41,6 +42,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -54,6 +56,8 @@ from PySide6.QtWidgets import (
     QSlider,
     QSizeGrip,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -172,13 +176,22 @@ MAX_REFERENCE_CHARS = 40000
 
 
 def _read_text_file(path: Path) -> str:
+    text: str | None = None
     last_error: Exception | None = None
     for encoding in ("utf-8-sig", "utf-8", "gb18030", "big5"):
         try:
-            return path.read_text(encoding=encoding)
+            text = path.read_text(encoding=encoding)
+            break
         except Exception as exc:
             last_error = exc
-    raise RuntimeError(f"无法读取文本文件：{last_error}")
+    if text is None:
+        raise RuntimeError(f"无法读取文本文件：{last_error}")
+    if text.lstrip().startswith("{\\rtf"):
+        raise RuntimeError(
+            "检测到 RTF 富文本格式，无法识别为词条。\n"
+            "建议直接用“编辑固定翻译”录入；如确需文件，请另存为纯文本 CSV/TXT 后再导入。"
+        )
+    return text
 
 
 def _clean_glossary_rows(rows) -> list[list[str]]:
@@ -511,6 +524,126 @@ class GlossaryDialog(QDialog):
             item = QListWidgetItem(f"{source}  →  {target}")
             item.setToolTip(f"{source} → {target}")
             self.list.addItem(item)
+
+
+class GlossaryEditorDialog(QDialog):
+    """固定翻译编辑页：直接添加/修改/删除词条，无需上传文件。"""
+
+    MAX_ROWS = 500
+
+    def __init__(
+        self,
+        entries: list[list[str]],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("固定翻译编辑")
+        self.setMinimumSize(660, 520)
+        self._entries: list[list[str]] = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+
+        title = QLabel("固定翻译")
+        title.setObjectName("dialogTitle")
+        layout.addWidget(title)
+        note = QLabel(
+            "左侧填说话时会出现的内容，右侧填要强制显示的译文；中英双向自动生效。\n"
+            "示例：BIOEFFECT → 蓓欧菲（英文说 BIOEFFECT 显示蓓欧菲，"
+            "中文说蓓欧菲显示 BIOEFFECT）。"
+        )
+        note.setObjectName("mutedLabel")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self.table = QTableWidget(0, 2)
+        self.table.setObjectName("glossaryTable")
+        self.table.setHorizontalHeaderLabels(("原文", "译文"))
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
+        layout.addWidget(self.table, 1)
+
+        edit_row = QHBoxLayout()
+        edit_row.setSpacing(8)
+        add_button = QPushButton("＋ 添加一行")
+        add_button.setObjectName("outlineButton")
+        add_button.clicked.connect(lambda: self._add_row())
+        delete_button = QPushButton("删除选中")
+        delete_button.setObjectName("ghostButton")
+        delete_button.clicked.connect(self._delete_selected)
+        edit_row.addWidget(add_button)
+        edit_row.addWidget(delete_button)
+        edit_row.addStretch(1)
+        layout.addLayout(edit_row)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Save
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText("保存")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Save).setObjectName("primaryButton")
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        for source, target in entries:
+            self._add_row(source, target)
+        if self.table.rowCount() == 0:
+            self._add_row()
+
+    def _add_row(self, source: str = "", target: str = "") -> None:
+        if self.table.rowCount() >= self.MAX_ROWS:
+            return
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        self.table.setItem(row, 0, QTableWidgetItem(str(source)))
+        self.table.setItem(row, 1, QTableWidgetItem(str(target)))
+
+    def _delete_selected(self) -> None:
+        rows = sorted(
+            {index.row() for index in self.table.selectedIndexes()},
+            reverse=True,
+        )
+        for row in rows:
+            self.table.removeRow(row)
+
+    def _save(self) -> None:
+        entries: list[list[str]] = []
+        for row in range(self.table.rowCount()):
+            source = (
+                str(self.table.item(row, 0).text() if self.table.item(row, 0) else "")
+                .strip()
+            )
+            target = (
+                str(self.table.item(row, 1).text() if self.table.item(row, 1) else "")
+                .strip()
+            )
+            if not source and not target:
+                continue
+            if not source or not target:
+                QMessageBox.warning(
+                    self,
+                    "内容不完整",
+                    f"第 {row + 1} 行只填了一半，请补全原文和译文，或删除该行。",
+                )
+                return
+            entries.append([source, target])
+        if len(entries) > self.MAX_ROWS:
+            QMessageBox.warning(self, "词条过多", f"最多支持 {self.MAX_ROWS} 条固定翻译。")
+            return
+        self._entries = entries
+        self.accept()
+
+    def values(self) -> list[list[str]]:
+        return self._entries
 
 
 class PrewarmDialog(QDialog):
@@ -1952,10 +2085,10 @@ class MainWindow(QMainWindow):
         self.materials_status = QLabel("未导入")
         self.materials_status.setObjectName("mutedLabel")
         row.addWidget(self.materials_status, 1)
-        glossary_button = QPushButton("上传固定译法")
+        glossary_button = QPushButton("编辑固定翻译")
         glossary_button.setObjectName("outlineButton")
-        glossary_button.setToolTip("导入 TXT、CSV、TSV 或 XLSX 术语表")
-        glossary_button.clicked.connect(self._import_glossary)
+        glossary_button.setToolTip("直接录入固定译法，无需上传文件")
+        glossary_button.clicked.connect(self._open_glossary_editor)
         row.addWidget(glossary_button)
         glossary_list_button = QPushButton("查看列表")
         glossary_list_button.setObjectName("outlineButton")
@@ -2222,7 +2355,7 @@ class MainWindow(QMainWindow):
     def _open_glossary_list(self) -> None:
         entries = self.config.get("glossary_entries", [])
         if not isinstance(entries, list) or not entries:
-            QMessageBox.information(self, "固定翻译", "还没有导入固定翻译，先点“上传固定译法”。")
+            QMessageBox.information(self, "固定翻译", "还没有固定翻译，先点“编辑固定翻译”添加。")
             return
         if self.glossary_dialog is None or not self.glossary_dialog.isVisible():
             self.glossary_dialog = GlossaryDialog(entries, self)
@@ -2230,6 +2363,24 @@ class MainWindow(QMainWindow):
         else:
             self.glossary_dialog.raise_()
             self.glossary_dialog.activateWindow()
+
+    def _open_glossary_editor(self) -> None:
+        entries = self.config.get("glossary_entries", [])
+        if not isinstance(entries, list):
+            entries = []
+        cleaned = [
+            [str(s), str(t)]
+            for s, t in entries
+            if s and t
+        ]
+        dialog = GlossaryEditorDialog(cleaned, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_entries = dialog.values()
+            self.config["glossary_entries"] = new_entries
+            save_config(self.config)
+            self._update_materials_status()
+            self._sync_translation_materials_to_client()
+            self.status_label.setText(f"固定翻译已保存（{len(new_entries)} 条）")
 
     def _open_prewarm_list(self) -> None:
         if self.prewarm_dialog is None or not self.prewarm_dialog.isVisible():
@@ -2837,6 +2988,9 @@ def stylesheet() -> str:
     QListWidget#glossaryList, QListWidget#prewarmList {{ background: white; border: 1px solid {TOKENS['border']}; border-radius: 10px; padding: 6px; outline: 0; }}
     QListWidget#glossaryList::item, QListWidget#prewarmList::item {{ padding: 8px 10px; border-radius: 8px; margin: 1px 0; color: {TOKENS['text']}; }}
     QListWidget#glossaryList::item:hover, QListWidget#prewarmList::item:hover {{ background: rgba(23,104,213,0.06); }}
+    QTableWidget#glossaryTable {{ background: white; border: 1px solid {TOKENS['border']}; border-radius: 10px; gridline-color: transparent; selection-background-color: rgba(23,104,213,0.08); selection-color: {TOKENS['text']}; }}
+    QTableWidget#glossaryTable::item {{ padding: 4px 10px; border-bottom: 1px solid #F0F2F6; }}
+    QHeaderView::section {{ background: #F6F8FB; border: none; border-bottom: 1px solid {TOKENS['border']}; padding: 7px 10px; font-weight: 700; color: {TOKENS['muted']}; }}
     QProgressBar#prewarmProgress {{ background: #E9EDF3; border: none; border-radius: 7px; min-height: 14px; max-height: 14px; text-align: center; color: {TOKENS['muted']}; font-size: 11px; }}
     QProgressBar#prewarmProgress::chunk {{ background: {TOKENS['blue']}; border-radius: 7px; }}
     QComboBox {{ background: white; color: {TOKENS['text']}; border: 1px solid {TOKENS['border']}; border-radius: 8px; padding: 3px 10px; padding-right: 26px; min-height: 34px; selection-background-color: {TOKENS['blue']}; }}
