@@ -2132,14 +2132,17 @@ class MainWindow(QMainWindow):
         return self.device_combo.currentData()
 
     def _start(self) -> None:
-        if not self._xfyun_ready():
-            QMessageBox.warning(self, "接口未配置", "请先填写讯飞接口信息。")
+        if not self._backend_ready():
+            QMessageBox.warning(self, "接口未配置", "请先在接口设置中填写 Azure 密钥和区域。")
             self._open_settings()
             return
-        if self.config.get("translation_direction") in {"auto", "en_zh"} and not str(self.config.get("deepseek_api_key", "")).strip():
-            QMessageBox.warning(self, "接口未配置", "自动识别和英译中需要 DeepSeek API Key。")
-            self._open_settings()
-            return
+        if str(self.config.get("provider", "azure")) != "azure":
+            if self.config.get("translation_direction") in {"auto", "en_zh"} and not str(
+                self.config.get("deepseek_api_key", "")
+            ).strip():
+                QMessageBox.warning(self, "接口未配置", "自动识别和英译中需要 DeepSeek API Key。")
+                self._open_settings()
+                return
 
         self.session_segments = []
         self.session_chinese = ""
