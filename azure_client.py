@@ -339,19 +339,22 @@ class AzureInterpreter:
 
     @staticmethod
     def _phrase_variants(term: str) -> list[str]:
-        """为拉丁词自动生成自然发音变体，提高第一次识别命中率。
-        BIOEFFECT → BIOEFFECT / Bio Effect / Bio-Effect / bioeffect / bio effect"""
+        """为拉丁词自动生成自然发音写法，供 Azure 短语提示使用。
+        BIOEFFECT → BIOEFFECT / BIO EFFECT / bio effect
+        只保留自然拼写，不加连字符、全小写粘连等非自然形式——
+        这类写法会与其他词条互相干扰（如 barleyegf / valleyfact 让
+        BIOEFFECT 和 Barley EGF 混淆）。"""
         term = str(term or "").strip()
         if not term:
             return []
+        if not re.search(r"[A-Za-z]", term):
+            return [term]  # 中文词条原样注入
         variants = [term]
         letters = "".join(ch for ch in term if ch.isalnum())
         if len(letters) >= 4 and re.search(r"[A-Za-z]", letters):
             parts = re.split(r"(?<=[a-z0-9])(?=[A-Z])", letters)
             if len(parts) > 1:
                 variants.append(" ".join(parts))
-                variants.append("-".join(parts))
-                variants.append("".join(parts).lower())
                 variants.append(" ".join(parts).lower())
             # 全大写词拆不出驼峰时，尝试在常见词尾前加空格：
             # BIOEFFECT → BIO EFFECT（更接近自然发音，便于识别）
@@ -360,7 +363,6 @@ class AzureInterpreter:
                 if lower.endswith(suffix) and len(letters) > len(suffix) + 1:
                     split_at = len(letters) - len(suffix)
                     variants.append(letters[:split_at] + " " + letters[split_at:])
-                    variants.append(letters[:split_at] + "-" + letters[split_at:])
                     break
         seen: set[str] = set()
         out: list[str] = []
@@ -372,14 +374,26 @@ class AzureInterpreter:
                 out.append(variant)
         return out
 
-    def _apply_glossary_logged(self, text: str, translation: str) -> str:
+    def _apply_glossary_logged(
+        self,
+        text: str,
+        translation: str,
+        corrections=None,
+    ) -> str:
         original = translation
-        updated = self.deepseek._apply_glossary(text, translation)
+        updated = self.deepseek._apply_glossary(text, translation, corrections)
         if updated != original and updated.strip():
             self._log(
                 f"固定翻译命中：原文 {text.strip()[:40]!r} → 译文 {updated.strip()[:60]!r}"
             )
         return updated
+
+    def _log_fuzzy_corrections(self, corrections) -> None:
+        for span, canonical, replacement in corrections:
+            self._log(
+                f"模糊纠错命中：{span.strip()[:40]!r} → {canonical.strip()[:40]!r}"
+                f"（替换译文：{replacement.strip()[:40]!r}）"
+            )
 
     def _start_microphone(self) -> None:
         def callback(indata: bytes, _frames: int, _time_info: object, status: object) -> None:
@@ -468,9 +482,12 @@ class AzureInterpreter:
         text = str(getattr(result, "text", "") or "")
         if not text.strip():
             return
+        text, corrections = self.deepseek.correct_source_text(text)
+        if corrections:
+            self._log_fuzzy_corrections(corrections)
         translations = dict(getattr(result, "translations", {}) or {})
         source_lang, translation = self._pick_source_translation(text, translations, result)
-        translation = self._apply_glossary_logged(text, translation)
+        translation = self._apply_glossary_logged(text, translation, corrections)
         with self._ordered_lock:
             self._current_source_language = source_lang
             if source_lang == "en":
@@ -488,6 +505,9 @@ class AzureInterpreter:
         text = str(getattr(result, "text", "") or "")
         if not text.strip():
             return
+        text, corrections = self.deepseek.correct_source_text(text)
+        if corrections:
+            self._log_fuzzy_corrections(corrections)
         translations = dict(getattr(result, "translations", {}) or {})
         source_lang, translation = self._pick_source_translation(text, translations, result)
         target_lang = "zh-CN" if source_lang == "en" else "en-US"
@@ -498,7 +518,7 @@ class AzureInterpreter:
         elif translation:
             store_manuscript_cache(text, target_lang, translation)
         # 词条最后应用：无论译文来自 Azure 还是翻译记忆，都强制走固定译法。
-        translation = self._apply_glossary_logged(text, translation)
+        translation = self._apply_glossary_logged(text, translation, corrections)
         self._log(
             f"识别结果：{source_lang} {text.strip()[:50]!r} → {raw_translation.strip()[:60]!r}"
             + (

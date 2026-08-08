@@ -64,10 +64,11 @@ from PySide6.QtWidgets import (
 )
 
 from azure_client import AzureInterpreter
+from openai_client import OpenAIInterpreter
 from xfyun_client import XfyunInterpreter, set_manuscript_cache_db
 
-APP_NAME = "ísmolar 同声传译 · v1.9.13 简洁界面版"
-APP_VERSION = "1.9.13"
+APP_NAME = "ísmolar 同声传译 · v1.9.25 简洁界面版"
+APP_VERSION = "1.9.25"
 
 TOKENS = {
     "bg": "#F6F9FD",
@@ -95,6 +96,9 @@ DEFAULT_CONFIG = {
     "azure_region": "swedencentral",
     "azure_voice_zh": "zh-CN-XiaoxiaoNeural",
     "azure_voice_en": "en-US-AriaNeural",
+    "openai_api_key": "",
+    "openai_transcribe_model": "gpt-4o-transcribe",
+    "openai_translate_model": "gpt-4o-mini",
     "translation_direction": "auto",
     "play_tts": False,
     "show_chinese": True,
@@ -355,8 +359,9 @@ class CredentialDialog(QDialog):
         layout.addWidget(title)
         note = QLabel(
             "密钥只保存在当前电脑，不会写入 GitHub 仓库。\n"
-            "国内模式 = 讯飞 + DeepSeek；国外模式 = Azure（冰岛/海外推荐，"
-            "区域建议 swedencentral / westeurope / northeurope）。"
+            "国内模式 = 讯飞 + DeepSeek；\n"
+            "国外模式 = Azure（海外延迟低）或 OpenAI（品牌词识别强，"
+            "识别+翻译都用 OpenAI）。"
         )
         note.setObjectName("mutedLabel")
         layout.addWidget(note)
@@ -366,6 +371,7 @@ class CredentialDialog(QDialog):
         form.setVerticalSpacing(14)
         self.provider = QComboBox()
         self.provider.addItem("国外模式（Azure，冰岛/海外推荐）", "azure")
+        self.provider.addItem("国外模式（OpenAI 识别+翻译）", "openai")
         self.provider.addItem("国内模式（讯飞 + DeepSeek）", "xfyun")
         provider_index = self.provider.findData(str(config.get("provider", "azure")))
         self.provider.setCurrentIndex(max(0, provider_index))
@@ -399,6 +405,14 @@ class CredentialDialog(QDialog):
         else:
             self.azure_region.setCurrentIndex(region_index)
 
+        self.openai_api_key = QLineEdit(str(config.get("openai_api_key", "")))
+        self.openai_transcribe_model = QLineEdit(
+            str(config.get("openai_transcribe_model", "gpt-4o-transcribe"))
+        )
+        self.openai_translate_model = QLineEdit(
+            str(config.get("openai_translate_model", "gpt-4o-mini"))
+        )
+
         self._cn_rows: list[tuple[QLabel, QWidget]] = []
         for label_text, widget in (
             ("讯飞 APPID", self.app_id),
@@ -422,6 +436,16 @@ class CredentialDialog(QDialog):
             form.addRow(label, widget)
             self._azure_rows.append((label, widget))
 
+        self._openai_rows: list[tuple[QLabel, QWidget]] = []
+        for label_text, widget in (
+            ("OpenAI API Key", self.openai_api_key),
+            ("识别模型", self.openai_transcribe_model),
+            ("翻译模型", self.openai_translate_model),
+        ):
+            label = QLabel(label_text)
+            form.addRow(label, widget)
+            self._openai_rows.append((label, widget))
+
         self.provider.currentIndexChanged.connect(self._update_visibility)
         self._update_visibility()
         layout.addLayout(form)
@@ -435,18 +459,26 @@ class CredentialDialog(QDialog):
         layout.addWidget(buttons)
 
     def _update_visibility(self) -> None:
-        azure = str(self.provider.currentData() or "azure") == "azure"
+        provider = str(self.provider.currentData() or "azure")
+        azure = provider == "azure"
+        openai = provider == "openai"
         for label, widget in self._cn_rows:
-            label.setVisible(not azure)
-            widget.setVisible(not azure)
-        self.deepseek_label.setVisible(True)
-        self.deepseek_api_key.setVisible(True)
+            visible = provider == "xfyun"
+            label.setVisible(visible)
+            widget.setVisible(visible)
+        self.deepseek_label.setVisible(provider == "xfyun" or azure)
+        self.deepseek_api_key.setVisible(provider == "xfyun" or azure)
         self.deepseek_label.setText(
-            "DeepSeek Key（可选，稿件预翻译用）" if azure else "DeepSeek API Key"
+            "DeepSeek Key（可选，稿件预翻译用）"
+            if azure
+            else "DeepSeek API Key"
         )
         for label, widget in self._azure_rows:
             label.setVisible(azure)
             widget.setVisible(azure)
+        for label, widget in self._openai_rows:
+            label.setVisible(openai)
+            widget.setVisible(openai)
 
     def values(self) -> dict:
         region = str(
@@ -463,6 +495,14 @@ class CredentialDialog(QDialog):
             "deepseek_model": self.deepseek_model.text().strip() or "deepseek-v4-flash",
             "azure_key": self.azure_key.text().strip(),
             "azure_region": region,
+            "openai_api_key": self.openai_api_key.text().strip(),
+            "openai_transcribe_model": (
+                self.openai_transcribe_model.text().strip()
+                or "gpt-4o-transcribe"
+            ),
+            "openai_translate_model": (
+                self.openai_translate_model.text().strip() or "gpt-4o-mini"
+            ),
         }
 
 
@@ -1542,7 +1582,9 @@ class SubtitleOverlay(QMainWindow):
         self._schedule_toolbar_hide()
 
     def _schedule_toolbar_hide(self) -> None:
-        self.toolbar_hide_timer.start(4500)
+        # ponytail: 侧边工具栏常驻，避免同传中找不到“停止”按钮。
+        # 要恢复自动隐藏，把下面的 start(4500) 加回来即可。
+        pass
 
     def _hide_toolbar(self) -> None:
         self.side_toolbar.hide()
@@ -2257,11 +2299,14 @@ class MainWindow(QMainWindow):
         return all(str(self.config.get(key, "")).strip() for key in ("app_id", "api_key", "api_secret"))
 
     def _backend_ready(self) -> bool:
-        if str(self.config.get("provider", "xfyun")) == "azure":
+        provider = str(self.config.get("provider", "xfyun"))
+        if provider == "azure":
             return bool(
                 str(self.config.get("azure_key", "")).strip()
                 and str(self.config.get("azure_region", "")).strip()
             )
+        if provider == "openai":
+            return bool(str(self.config.get("openai_api_key", "")).strip())
         return self._xfyun_ready()
 
     def _apply_config_to_ui(self) -> None:
@@ -2298,6 +2343,16 @@ class MainWindow(QMainWindow):
             else:
                 self.api_state.setText("国外模式：Azure 接口尚未配置")
                 state = "error"
+        elif provider == "openai":
+            if self._backend_ready():
+                self.api_state.setText(
+                    f"国外模式：OpenAI 已配置（"
+                    f"{self.config.get('openai_transcribe_model', 'gpt-4o-transcribe')}）"
+                )
+                state = "ok"
+            else:
+                self.api_state.setText("国外模式：OpenAI API Key 尚未配置")
+                state = "error"
         else:
             xfyun = self._xfyun_ready()
             deepseek = bool(str(self.config.get("deepseek_api_key", "")).strip())
@@ -2321,10 +2376,17 @@ class MainWindow(QMainWindow):
         dialog = CredentialDialog(self.config, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             values = dialog.values()
-            if values.get("provider", "azure") == "azure":
+            selected_provider = str(values.get("provider", "azure"))
+            if selected_provider == "azure":
                 if not values.get("azure_key") or not values.get("azure_region"):
                     QMessageBox.warning(
                         self, "缺少信息", "Azure 密钥（Key）和区域（Region）都必须填写。"
+                    )
+                    return
+            elif selected_provider == "openai":
+                if not values.get("openai_api_key"):
+                    QMessageBox.warning(
+                        self, "缺少信息", "OpenAI API Key 必须填写。"
                     )
                     return
             else:
@@ -2356,25 +2418,33 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(1500, self._launch_client)
 
     def _sync_direction_note(self, direction: str) -> None:
-        azure = str(self.config.get("provider", "xfyun")) == "azure"
+        provider = str(self.config.get("provider", "xfyun"))
+        azure = provider == "azure"
+        openai = provider == "openai"
         if direction == "auto":
             self.direction_note.setText("中英文混合识别 → 自动选择目标语言")
         elif direction == "zh_en":
             self.direction_note.setText(
-                "中文语音 → Azure 英文译文" if azure else "中文语音 → 讯飞英文译文"
+                "中文语音 → Azure 英文译文"
+                if azure
+                else ("中文语音 → OpenAI 英文译文" if openai else "中文语音 → 讯飞英文译文")
             )
         else:
             self.direction_note.setText(
                 "English speech → Azure 中文译文"
                 if azure
-                else "English speech → DeepSeek 中文译文"
+                else (
+                    "English speech → OpenAI 中文译文"
+                    if openai
+                    else "English speech → DeepSeek 中文译文"
+                )
             )
 
     def _change_direction(self, direction: str) -> None:
         direction = direction if direction in {"auto", "zh_en", "en_zh"} else "zh_en"
         provider = str(self.config.get("provider", "xfyun"))
         if (
-            provider != "azure"
+            provider == "xfyun"
             and direction in {"auto", "en_zh"}
             and not str(self.config.get("deepseek_api_key", "")).strip()
         ):
@@ -2626,6 +2696,11 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "接口未配置", "请先在接口设置中填写 Azure 密钥和区域。")
                 self._open_settings()
                 return
+        elif provider == "openai":
+            if not self._backend_ready():
+                QMessageBox.warning(self, "接口未配置", "请先在接口设置中填写 OpenAI API Key。")
+                self._open_settings()
+                return
         else:
             if not self._xfyun_ready():
                 QMessageBox.warning(self, "接口未配置", "请先填写讯飞接口信息。")
@@ -2676,7 +2751,8 @@ class MainWindow(QMainWindow):
                 session_id=session_id,
                 initial_segments=self.session_segments,
             )
-            if str(self.config.get("provider", "xfyun")) == "azure":
+            provider = str(self.config.get("provider", "xfyun"))
+            if provider == "azure":
                 self.client = AzureInterpreter(
                     azure_key=str(self.config.get("azure_key", "")),
                     azure_region=str(self.config.get("azure_region", "westeurope")),
@@ -2685,6 +2761,19 @@ class MainWindow(QMainWindow):
                     ),
                     azure_voice_en=str(
                         self.config.get("azure_voice_en", "en-US-AriaNeural")
+                    ),
+                    **common,
+                )
+            elif provider == "openai":
+                self.client = OpenAIInterpreter(
+                    openai_api_key=str(self.config.get("openai_api_key", "")),
+                    openai_transcribe_model=str(
+                        self.config.get(
+                            "openai_transcribe_model", "gpt-4o-transcribe"
+                        )
+                    ),
+                    openai_translate_model=str(
+                        self.config.get("openai_translate_model", "gpt-4o-mini")
                     ),
                     **common,
                 )

@@ -325,9 +325,13 @@ class DeepSeekTranslator:
         if not self.api_key:
             raise RuntimeError("未配置 DeepSeek API Key")
 
-        cached = lookup_manuscript_cache(text, target_lang)
+        # 先把识别文本里被听错但与固定词条足够相似的片段修正为标准词条，
+        # 例如 Belle Effect → BIOEFFECT，这样翻译和翻译记忆都走正确词条。
+        corrected, corrections = self.correct_source_text(text)
+
+        cached = lookup_manuscript_cache(corrected, target_lang)
         if cached is not None:
-            return self._apply_glossary(text, cached)
+            return self._apply_glossary(corrected, cached, corrections)
 
         body = {
             "model": self.model,
@@ -337,9 +341,9 @@ class DeepSeekTranslator:
             "messages": [
                 {
                     "role": "system",
-                    "content": self._system_prompt(text, source_lang, target_lang),
+                    "content": self._system_prompt(corrected, source_lang, target_lang),
                 },
-                {"role": "user", "content": text},
+                {"role": "user", "content": corrected},
             ],
         }
         request = urllib.request.Request(
@@ -365,11 +369,16 @@ class DeepSeekTranslator:
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError("DeepSeek 返回格式异常") from exc
 
-        translated = self._apply_glossary(text, translated)
-        store_manuscript_cache(text, target_lang, translated)
+        translated = self._apply_glossary(corrected, translated, corrections)
+        store_manuscript_cache(corrected, target_lang, translated)
         return translated
 
-    def _apply_glossary(self, text: str, translated: str) -> str:
+    def _apply_glossary(
+        self,
+        text: str,
+        translated: str,
+        corrections: Optional[list[tuple[str, str, str]]] = None,
+    ) -> str:
         # 双向固定译法：原文出现左侧词 → 译文强制用右侧词；
         # 原文出现右侧词 → 译文强制用左侧词。一份词条两个方向都生效。
         result = translated
@@ -378,6 +387,12 @@ class DeepSeekTranslator:
                 result = self._replace_term(source, target, result)
             elif self._term_in_text(target, text):
                 result = self._replace_term(target, source, result)
+        # 模糊纠错产生的替换：译文里若保留误听片段（多为英文品牌/人名），
+        # 也一并替换成词条译文；例如译文是 “Belle Effect 是个好品牌” →
+        # “蓓欧菲 是个好品牌”。
+        for span, canonical, replacement in (corrections or []):
+            if self._term_in_text(canonical, text):
+                result = self._replace_term(span, replacement, result)
         return result
 
     @staticmethod
@@ -399,15 +414,247 @@ class DeepSeekTranslator:
         if not re.search(r"[A-Za-z0-9]", norm):
             # 中文词：直接按原样替换。
             return re.sub(re.escape(term), replacement, translated)
-        # 拉丁词：替换译文里“归一化后等于词条”的片段，容忍空格/连字符/大小写差异。
-        pattern = re.compile(r"[A-Za-z0-9]+(?:[\s\-_.'’]+[A-Za-z0-9]+)*")
+        # 拉丁词：按词条的字母序列匹配，容忍空格/连字符/大小写差异，
+        # 但要求首尾是词边界，避免把整个英文句子吞成一个片段。
+        # 例如 BIOEFFECT 能匹配 BIOEFFECT / Bio Effect / bio-effect，
+        # 但不会把 “BIOEFFECT is a good brand” 整句当成一个片段。
+        letters = "".join(re.findall(r"[A-Za-z0-9]", term))
+        if not letters:
+            return translated
+        pattern = re.compile(
+            r"(?<![A-Za-z0-9])"
+            + "".join(re.escape(ch) + r"[\s\-_.'’]*" for ch in letters)
+            + r"(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        )
+        return pattern.sub(replacement, translated)
 
-        def _sub(match) -> str:
-            if DeepSeekTranslator._normalize_term(match.group(0)) == norm:
-                return replacement
-            return match.group(0)
+    @staticmethod
+    def _exact_span(term: str, text: str) -> Optional[str]:
+        """在原文中查找词条，返回实际命中的片段；找不到返回 None。
+        拉丁词按字母序列匹配且要求词边界（BIOEFFECT 可匹配
+        Bio Effect / bio-effect，但不会命中 Bally Fact 里的 Bally factor）。"""
+        if not term or not text:
+            return None
+        if re.search(r"[A-Za-z0-9]", term):
+            letters = "".join(re.findall(r"[A-Za-z0-9]", term))
+            if not letters:
+                return None
+            pattern = re.compile(
+                r"(?<![A-Za-z0-9])"
+                + "".join(re.escape(ch) + r"[\s\-_.'’]*" for ch in letters)
+                + r"(?![A-Za-z0-9])",
+                re.IGNORECASE,
+            )
+            m = pattern.search(text)
+            return m.group(0) if m else None
+        m = re.search(re.escape(term), text)
+        return m.group(0) if m else None
 
-        return pattern.sub(_sub, translated)
+    @staticmethod
+    def _edit_distance(left: str, right: str) -> int:
+        """经典编辑距离（插入/删除/替换各计 1），用于模糊匹配。"""
+        if len(left) > len(right):
+            left, right = right, left
+        prev = list(range(len(right) + 1))
+        for i, ca in enumerate(left, 1):
+            cur = [i]
+            for j, cb in enumerate(right, 1):
+                cur.append(
+                    min(
+                        prev[j] + 1,
+                        cur[j - 1] + 1,
+                        prev[j - 1] + (ca != cb),
+                    )
+                )
+            prev = cur
+        return prev[-1]
+
+    @staticmethod
+    def _fuzzy_candidates(
+        text: str, cjk: bool, term_len: int
+    ) -> list[tuple[str, str]]:
+        """返回原文里可能“像词条”的候选片段及其归一化形式。
+        英文按词取单个词与相邻 2~3 词组合；中文取与词条长度接近的连续子串。"""
+        out: list[tuple[str, str]] = []
+        seen: set[str] = set()
+
+        def add(span: str) -> None:
+            key = span.casefold()
+            if key in seen:
+                return
+            seen.add(key)
+            out.append((span, DeepSeekTranslator._normalize_term(span)))
+
+        if cjk:
+            lo, hi = max(2, term_len - 1), term_len + 1
+            for run in re.finditer(r"[\u4e00-\u9fff]+", text):
+                s = run.group(0)
+                for start in range(len(s)):
+                    for end in range(start + lo, min(len(s), start + hi) + 1):
+                        add(s[start:end])
+            return out
+
+        tokens = [
+            m.group(0)
+            for m in re.finditer(r"[A-Za-z0-9]+(?:['’\-][A-Za-z0-9]+)*", text)
+        ]
+        for tok in tokens:
+            add(tok)
+        for width in (2, 3):
+            for i in range(len(tokens) - width + 1):
+                add(" ".join(tokens[i : i + width]))
+        return out
+
+    @staticmethod
+    def _fuzzy_match(term: str, text: str) -> Optional[tuple[str, float]]:
+        """在 text 中找与 term 足够相似的片段，返回 (片段原文, 相似度) 或 None。
+        阈值保守：宁可不命中，也不把普通句子里的常见词误替换成品牌词。"""
+        norm_term = DeepSeekTranslator._normalize_term(term)
+        if not norm_term:
+            return None
+        cjk = not bool(re.search(r"[A-Za-z0-9]", norm_term))
+        if cjk:
+            if len(norm_term) < 2:
+                return None
+            threshold, max_dist = 0.66, 1
+        else:
+            if len(norm_term) < 5:
+                return None
+            threshold, max_dist = 0.75, 3
+        best: Optional[tuple[str, float]] = None
+        for span, norm_span in DeepSeekTranslator._fuzzy_candidates(
+            text, cjk, len(norm_term)
+        ):
+            if abs(len(norm_span) - len(norm_term)) > max_dist + 2:
+                continue
+            dist = DeepSeekTranslator._edit_distance(norm_term, norm_span)
+            sim = 1.0 - dist / max(len(norm_term), len(norm_span))
+            if sim >= threshold and dist <= max_dist:
+                if not cjk and norm_span:
+                    # 首字母不同时要求极高相似度，避免 “good effect” 误替换成品牌词。
+                    if norm_span[0] != norm_term[0] and sim < 0.85:
+                        continue
+                if (
+                    best is None
+                    or sim > best[1]
+                    or (sim == best[1] and len(span) > len(best[0]))
+                ):
+                    best = (span, sim)
+        return best
+
+    def correct_source_text(
+        self, text: str
+    ) -> tuple[str, list[tuple[str, str, str]]]:
+        """把识别文本里被听错但与固定词条足够相似的片段替换为标准词条。
+        例如 “Byo Effect is a good brand” → “BIOEFFECT is a good brand”。
+        返回 (修正后文本, [(误听片段, 标准词条, 替换译文), ...])，
+        供调用方把译文里的误听片段也替换成词条译文。
+
+        归一化规则：同一译法（右侧词）对应的多个左侧词，只认用户录入的
+        第一条为标准词；别名只做精确替换、不参与模糊匹配，避免别名之间
+        连环替换（Byo Effect → Bell Effect → Well Effect…）。
+        """
+        if not self.glossary_entries or not text:
+            return text, []
+
+        # 每个译文对应的首选标准词（用户录入顺序里的第一条）
+        primary_by_target: dict[str, str] = {}
+        primary_by_source: dict[str, str] = {}
+        for source, target in self.glossary_entries:
+            primary_by_target.setdefault(
+                DeepSeekTranslator._normalize_term(target), source
+            )
+            primary_by_source.setdefault(
+                DeepSeekTranslator._normalize_term(source), target
+            )
+
+        corrected = text
+        corrections: list[tuple[str, str, str]] = []
+        norm_text = DeepSeekTranslator._normalize_term(text)
+        # 长词条优先，避免短词条抢先占位。
+        entries = sorted(
+            self.glossary_entries,
+            key=lambda e: max(
+                len(DeepSeekTranslator._normalize_term(t)) for t in e[:2]
+            ),
+            reverse=True,
+        )
+
+        def replace_first(span: str, replacement: str) -> None:
+            nonlocal corrected, norm_text
+            idx = corrected.casefold().find(span.casefold())
+            if idx < 0:
+                return False
+            corrected = (
+                corrected[:idx] + replacement + corrected[idx + len(span) :]
+            )
+            norm_text = DeepSeekTranslator._normalize_term(corrected)
+            return True
+
+        # 第一步：精确命中的词（含历史别名）统一归一化到首选标准词。
+        for source, target in entries:
+            norm_source = DeepSeekTranslator._normalize_term(source)
+            norm_target = DeepSeekTranslator._normalize_term(target)
+            if (
+                norm_source
+                and norm_source
+                != DeepSeekTranslator._normalize_term(
+                    primary_by_target.get(norm_target, "")
+                )
+            ):
+                span = DeepSeekTranslator._exact_span(source, corrected)
+                if span and replace_first(span, primary_by_target[norm_target]):
+                    corrections.append((span, primary_by_target[norm_target], target))
+            if (
+                norm_target
+                and norm_target
+                != DeepSeekTranslator._normalize_term(
+                    primary_by_source.get(norm_source, "")
+                )
+            ):
+                span = DeepSeekTranslator._exact_span(target, corrected)
+                if span and replace_first(span, primary_by_source[norm_source]):
+                    corrections.append((span, primary_by_source[norm_source], source))
+
+        # 第二步：只对首选标准词做模糊纠错，别名不参与，避免连环替换。
+        fuzzy_checks = 0
+        seen_fuzzy: set[str] = set()
+        for source, target in entries:
+            for term, canonical, replacement in (
+                (
+                    primary_by_target.get(
+                        DeepSeekTranslator._normalize_term(target), ""
+                    ),
+                    primary_by_target.get(
+                        DeepSeekTranslator._normalize_term(target), ""
+                    ),
+                    target,
+                ),
+                (
+                    target,
+                    primary_by_source.get(
+                        DeepSeekTranslator._normalize_term(source), ""
+                    ),
+                    source,
+                ),
+            ):
+                if not term or not canonical:
+                    continue
+                norm_term = DeepSeekTranslator._normalize_term(term)
+                if norm_term in seen_fuzzy or norm_term in norm_text:
+                    continue  # 已精确命中，无需模糊
+                seen_fuzzy.add(norm_term)
+                if fuzzy_checks >= 120:
+                    continue
+                fuzzy_checks += 1
+                hit = DeepSeekTranslator._fuzzy_match(term, corrected)
+                if not hit or hit[0] not in corrected:
+                    continue
+                span = hit[0]
+                if replace_first(span, canonical):
+                    corrections.append((span, canonical, replacement))
+        return corrected, corrections
 
     def _reference_sentences(self, max_sentences: int = 300) -> list[str]:
         parts = re.split(r"[。！？!?；;.\n]+", self.reference_text)
