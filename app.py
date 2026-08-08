@@ -218,6 +218,25 @@ def _clean_glossary_rows(rows) -> list[list[str]]:
     return entries
 
 
+def parse_glossary_text(text: str) -> list[list[str]]:
+    """把多行词条文本解析成 [原文, 译文] 列表。
+    每行一条，分隔符支持 Tab、=>、→、->、=、：、:、，、,；# 开头为注释。"""
+    rows: list[list[str]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        pair: list[str] | None = None
+        for delimiter in ("\t", "=>", "→", "->", "=", "：", ":", "，", ","):
+            if delimiter in line:
+                left, right = line.split(delimiter, 1)
+                pair = [left.strip(), right.strip()]
+                break
+        if pair and pair[0] and pair[1]:
+            rows.append(pair)
+    return rows
+
+
 def load_glossary_file(path: Path) -> list[list[str]]:
     suffix = path.suffix.lower()
     rows: list[list[str]] = []
@@ -236,21 +255,7 @@ def load_glossary_file(path: Path) -> list[list[str]]:
         rows = [list(row) for row in csv.reader(text.splitlines(), delimiter=delimiter)]
     elif suffix == ".txt":
         text = _read_text_file(path)
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-            pair = None
-            for delimiter in ("\t", "=>", "→", "->", "=", "：", ":"):
-                if delimiter in line:
-                    left, right = line.split(delimiter, 1)
-                    pair = [left, right]
-                    break
-            if pair is None and "," in line:
-                left, right = line.split(",", 1)
-                pair = [left, right]
-            if pair:
-                rows.append(pair)
+        rows = parse_glossary_text(text)
     else:
         raise RuntimeError("固定翻译支持 TXT、CSV、TSV、XLSX。")
 
@@ -557,6 +562,32 @@ class GlossaryEditorDialog(QDialog):
         note.setWordWrap(True)
         layout.addWidget(note)
 
+        self.paste = QTextEdit()
+        self.paste.setObjectName("glossaryPaste")
+        self.paste.setPlaceholderText(
+            "# 注释行会被跳过\n"
+            "BIOEFFECT，蓓欧菲\n"
+            "Barley EGF → 大麦生长因子\n"
+            "growth factor,生长因子"
+        )
+        self.paste.setFixedHeight(118)
+        layout.addWidget(self.paste)
+        paste_hint = QLabel(
+            "批量输入：每行一条，中间用任意分隔符（Tab、=>、→、->、=、：、:、，、,）都认；"
+            "# 开头为注释。填好后点“添加到列表”。"
+        )
+        paste_hint.setObjectName("mutedLabel")
+        paste_hint.setWordWrap(True)
+        layout.addWidget(paste_hint)
+        paste_row = QHBoxLayout()
+        paste_row.setSpacing(8)
+        import_button = QPushButton("添加到列表")
+        import_button.setObjectName("outlineButton")
+        import_button.clicked.connect(self._import_paste)
+        paste_row.addWidget(import_button)
+        paste_row.addStretch(1)
+        layout.addLayout(paste_row)
+
         self.table = QTableWidget(0, 2)
         self.table.setObjectName("glossaryTable")
         self.table.setHorizontalHeaderLabels(("原文", "译文"))
@@ -615,17 +646,45 @@ class GlossaryEditorDialog(QDialog):
         for row in rows:
             self.table.removeRow(row)
 
+    def _cell(self, row: int, col: int) -> str:
+        item = self.table.item(row, col)
+        return str(item.text()).strip() if item else ""
+
+    def _import_paste(self) -> None:
+        text = self.paste.toPlainText()
+        if not text.strip():
+            QMessageBox.information(self, "批量添加", "请先在文本框里输入或粘贴词条。")
+            return
+        parsed = parse_glossary_text(text)
+        existing = {
+            (self._cell(row, 0).casefold(), self._cell(row, 1).casefold())
+            for row in range(self.table.rowCount())
+        }
+        added = 0
+        skipped = 0
+        for source, target in parsed:
+            key = (source.casefold(), target.casefold())
+            if key in existing:
+                skipped += 1
+                continue
+            if self.table.rowCount() >= self.MAX_ROWS:
+                break
+            self._add_row(source, target)
+            existing.add(key)
+            added += 1
+        self.paste.clear()
+        message = f"已添加 {added} 条。"
+        if skipped:
+            message += f" 跳过重复 {skipped} 条。"
+        if not added:
+            message = "没有识别到新词条" + (f"（跳过重复 {skipped} 条）。" if skipped else "，请检查格式。")
+        QMessageBox.information(self, "批量添加", message)
+
     def _save(self) -> None:
         entries: list[list[str]] = []
         for row in range(self.table.rowCount()):
-            source = (
-                str(self.table.item(row, 0).text() if self.table.item(row, 0) else "")
-                .strip()
-            )
-            target = (
-                str(self.table.item(row, 1).text() if self.table.item(row, 1) else "")
-                .strip()
-            )
+            source = self._cell(row, 0)
+            target = self._cell(row, 1)
             if not source and not target:
                 continue
             if not source or not target:
