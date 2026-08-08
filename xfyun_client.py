@@ -140,6 +140,8 @@ def _normalize_match(text: str) -> str:
 
 
 def lookup_manuscript_cache(text: str, target_lang: str) -> str | None:
+    # 统一缓存键：zh-CN / en-US 与 zh / en 视为同一语言。
+    target_lang = str(target_lang or "").split("-")[0]
     key = _normalize_match(text)
     if len(key) < 2:
         return None
@@ -175,6 +177,7 @@ def lookup_manuscript_cache(text: str, target_lang: str) -> str | None:
 
 
 def store_manuscript_cache(text: str, target_lang: str, translation: str) -> None:
+    target_lang = str(target_lang or "").split("-")[0]
     key = _normalize_match(text)
     if len(key) < 2 or not translation.strip():
         return

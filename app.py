@@ -383,12 +383,14 @@ class CredentialDialog(QDialog):
             ("讯飞 APPID", self.app_id),
             ("讯飞 APIKey", self.api_key),
             ("讯飞 APISecret", self.api_secret),
-            ("DeepSeek API Key", self.deepseek_api_key),
             ("DeepSeek 模型", self.deepseek_model),
         ):
             label = QLabel(label_text)
             form.addRow(label, widget)
             self._cn_rows.append((label, widget))
+
+        self.deepseek_label = QLabel("DeepSeek API Key")
+        form.addRow(self.deepseek_label, self.deepseek_api_key)
 
         self._azure_rows: list[tuple[QLabel, QWidget]] = []
         for label_text, widget in (
@@ -416,6 +418,11 @@ class CredentialDialog(QDialog):
         for label, widget in self._cn_rows:
             label.setVisible(not azure)
             widget.setVisible(not azure)
+        self.deepseek_label.setVisible(True)
+        self.deepseek_api_key.setVisible(True)
+        self.deepseek_label.setText(
+            "DeepSeek Key（可选，稿件预翻译用）" if azure else "DeepSeek API Key"
+        )
         for label, widget in self._azure_rows:
             label.setVisible(azure)
             widget.setVisible(azure)

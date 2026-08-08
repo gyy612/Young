@@ -71,9 +71,13 @@ class AzureInterpreter:
             "zh-CN": str(azure_voice_zh or DEFAULT_VOICES["zh-CN"]).strip(),
             "en-US": str(azure_voice_en or DEFAULT_VOICES["en-US"]).strip(),
         }
-        # 复用讯飞客户端的术语表替换逻辑，不需要 DeepSeek API Key。
-        self._glossary = DeepSeekTranslator(
-            "", "", glossary_entries=glossary_entries, reference_text=""
+        # 复用讯飞客户端的翻译器：术语表替换 + 稿件离线预翻译。
+        # 预翻译只在配置了 DeepSeek Key 时启用，不影响实时识别。
+        self.deepseek = DeepSeekTranslator(
+            deepseek_api_key,
+            deepseek_model,
+            glossary_entries=glossary_entries,
+            reference_text=reference_text,
         )
         self.play_tts = bool(play_tts)
         self.input_device = input_device
@@ -170,6 +174,8 @@ class AzureInterpreter:
         self._recognizer = recognizer
 
         self._running.set()
+        if self.deepseek.has_context and self.deepseek.api_key:
+            threading.Thread(target=self._prewarm_thread, daemon=True).start()
         try:
             self._start_microphone()
             recognizer.start_continuous_recognition()
@@ -197,7 +203,12 @@ class AzureInterpreter:
         pass
 
     def update_translation_materials(self, glossary_entries, reference_text: str) -> None:
-        self._glossary.set_context(glossary_entries or [], "")
+        self.deepseek.set_context(glossary_entries or [], reference_text)
+        if self._running.is_set() and self.deepseek.has_context and self.deepseek.api_key:
+            threading.Thread(target=self._prewarm_thread, daemon=True).start()
+
+    def _prewarm_thread(self) -> None:
+        self.deepseek.prewarm_reference(should_stop=lambda: not self._running.is_set())
 
     def finalize_session(self, timeout: float = 20.0) -> dict[str, Any]:
         self.stop()
@@ -385,7 +396,7 @@ class AzureInterpreter:
             return
         translations = dict(getattr(result, "translations", {}) or {})
         source_lang, translation = self._pick_source_translation(text, translations, result)
-        translation = self._glossary._apply_glossary(text, translation)
+        translation = self.deepseek._apply_glossary(text, translation)
         target_lang = "zh-CN" if source_lang == "en" else "en-US"
         cached = lookup_manuscript_cache(text, target_lang)
         if cached:
