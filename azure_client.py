@@ -128,6 +128,12 @@ class AzureInterpreter:
 
         if self.direction == "auto":
             # 自动模式：中英混合识别，双向都作为目标语言，按检测结果取反向译文。
+            # 默认 LanguageIdMode=AtStart 会在会话开始时锁定源语言，中途切换
+            # 语言不会重新识别；这里显式开启连续语言识别（Continuous LID）。
+            cfg.set_property(
+                speech.PropertyId.SpeechServiceConnection_LanguageIdMode,
+                "Continuous",
+            )
             cfg.add_target_language("zh-CN")
             cfg.add_target_language("en-US")
             try:
