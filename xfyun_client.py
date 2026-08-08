@@ -367,13 +367,21 @@ class DeepSeekTranslator:
         return translated
 
     def _apply_glossary(self, text: str, translated: str) -> str:
-        # 若模型输出仍保留了原文中的词条，强制替换成固定译法。
+        # 双向固定译法：原文出现左侧词 → 译文强制用右侧词；
+        # 原文出现右侧词 → 译文强制用左侧词。一份词条两个方向都生效。
         result = translated
         for source, target in self.glossary_entries:
             if source.casefold() in text.casefold():
                 result = re.sub(
                     re.escape(source),
                     target,
+                    result,
+                    flags=re.IGNORECASE,
+                )
+            elif target.casefold() in text.casefold():
+                result = re.sub(
+                    re.escape(target),
+                    source,
                     result,
                     flags=re.IGNORECASE,
                 )
