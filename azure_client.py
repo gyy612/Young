@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import queue
+import platform
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 import sounddevice as sd
@@ -288,6 +290,32 @@ class AzureInterpreter:
     def _emit(self, event_type: str, **data: object) -> None:
         self.on_event({"type": event_type, "session_id": self.session_id, **data})
 
+    def _log(self, text: str) -> None:
+        """写入软件日志（与 app.py 同一日志文件），便于排查固定翻译命中情况。"""
+        try:
+            import os
+
+            if platform.system() == "Darwin":
+                log_dir = Path.home() / "Library" / "Application Support" / "ismolar-interpreter" / "logs"
+            elif platform.system() == "Windows":
+                log_dir = Path(os.environ.get("APPDATA", str(Path.home()))) / "ismolar-interpreter" / "logs"
+            else:
+                log_dir = Path.home() / ".config" / "ismolar-interpreter" / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with (log_dir / "app.log").open("a", encoding="utf-8") as fp:
+                fp.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {text}\n")
+        except Exception:
+            pass
+
+    def _apply_glossary_logged(self, text: str, translation: str) -> str:
+        original = translation
+        updated = self.deepseek._apply_glossary(text, translation)
+        if updated != original and updated.strip():
+            self._log(
+                f"固定翻译命中：原文 {text.strip()[:40]!r} → 译文 {updated.strip()[:60]!r}"
+            )
+        return updated
+
     def _start_microphone(self) -> None:
         def callback(indata: bytes, _frames: int, _time_info: object, status: object) -> None:
             if status:
@@ -377,6 +405,7 @@ class AzureInterpreter:
             return
         translations = dict(getattr(result, "translations", {}) or {})
         source_lang, translation = self._pick_source_translation(text, translations, result)
+        translation = self._apply_glossary_logged(text, translation)
         with self._ordered_lock:
             self._current_source_language = source_lang
             if source_lang == "en":
@@ -396,13 +425,14 @@ class AzureInterpreter:
             return
         translations = dict(getattr(result, "translations", {}) or {})
         source_lang, translation = self._pick_source_translation(text, translations, result)
-        translation = self.deepseek._apply_glossary(text, translation)
         target_lang = "zh-CN" if source_lang == "en" else "en-US"
         cached = lookup_manuscript_cache(text, target_lang)
         if cached:
             translation = cached
         elif translation:
             store_manuscript_cache(text, target_lang, translation)
+        # 词条最后应用：无论译文来自 Azure 还是翻译记忆，都强制走固定译法。
+        translation = self._apply_glossary_logged(text, translation)
 
         with self._ordered_lock:
             self._current_source_language = source_lang
