@@ -334,7 +334,8 @@ class CredentialDialog(QDialog):
         layout.addWidget(title)
         note = QLabel(
             "密钥只保存在当前电脑，不会写入 GitHub 仓库。\n"
-            "冰岛使用建议选择 Azure 欧洲区域（swedencentral / westeurope / northeurope）。"
+            "国内模式 = 讯飞 + DeepSeek；国外模式 = Azure（冰岛/海外推荐，"
+            "区域建议 swedencentral / westeurope / northeurope）。"
         )
         note.setObjectName("mutedLabel")
         layout.addWidget(note)
@@ -342,6 +343,18 @@ class CredentialDialog(QDialog):
         form = QFormLayout()
         form.setHorizontalSpacing(18)
         form.setVerticalSpacing(14)
+        self.provider = QComboBox()
+        self.provider.addItem("国外模式（Azure，冰岛/海外推荐）", "azure")
+        self.provider.addItem("国内模式（讯飞 + DeepSeek）", "xfyun")
+        provider_index = self.provider.findData(str(config.get("provider", "azure")))
+        self.provider.setCurrentIndex(max(0, provider_index))
+        form.addRow("运行模式", self.provider)
+
+        self.app_id = QLineEdit(str(config.get("app_id", "")))
+        self.api_key = QLineEdit(str(config.get("api_key", "")))
+        self.api_secret = QLineEdit(str(config.get("api_secret", "")))
+        self.deepseek_api_key = QLineEdit(str(config.get("deepseek_api_key", "")))
+        self.deepseek_model = QLineEdit(str(config.get("deepseek_model", "deepseek-v4-flash")))
         self.azure_key = QLineEdit(str(config.get("azure_key", "")))
         self.azure_region = QComboBox()
         self.azure_region.setEditable(True)
@@ -364,8 +377,30 @@ class CredentialDialog(QDialog):
             self.azure_region.setEditText(region_value)
         else:
             self.azure_region.setCurrentIndex(region_index)
-        form.addRow("Azure Key", self.azure_key)
-        form.addRow("Azure 区域", self.azure_region)
+
+        self._cn_rows: list[tuple[QLabel, QWidget]] = []
+        for label_text, widget in (
+            ("讯飞 APPID", self.app_id),
+            ("讯飞 APIKey", self.api_key),
+            ("讯飞 APISecret", self.api_secret),
+            ("DeepSeek API Key", self.deepseek_api_key),
+            ("DeepSeek 模型", self.deepseek_model),
+        ):
+            label = QLabel(label_text)
+            form.addRow(label, widget)
+            self._cn_rows.append((label, widget))
+
+        self._azure_rows: list[tuple[QLabel, QWidget]] = []
+        for label_text, widget in (
+            ("Azure Key", self.azure_key),
+            ("Azure 区域", self.azure_region),
+        ):
+            label = QLabel(label_text)
+            form.addRow(label, widget)
+            self._azure_rows.append((label, widget))
+
+        self.provider.currentIndexChanged.connect(self._update_visibility)
+        self._update_visibility()
         layout.addLayout(form)
 
         buttons = QDialogButtonBox(
@@ -376,6 +411,15 @@ class CredentialDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def _update_visibility(self) -> None:
+        azure = str(self.provider.currentData() or "azure") == "azure"
+        for label, widget in self._cn_rows:
+            label.setVisible(not azure)
+            widget.setVisible(not azure)
+        for label, widget in self._azure_rows:
+            label.setVisible(azure)
+            widget.setVisible(azure)
+
     def values(self) -> dict:
         region = str(
             self.azure_region.currentData()
@@ -383,12 +427,12 @@ class CredentialDialog(QDialog):
             or ""
         ).strip()
         return {
-            "provider": "azure",
-            "app_id": "",
-            "api_key": "",
-            "api_secret": "",
-            "deepseek_api_key": "",
-            "deepseek_model": "deepseek-v4-flash",
+            "provider": str(self.provider.currentData() or "azure"),
+            "app_id": self.app_id.text().strip(),
+            "api_key": self.api_key.text().strip(),
+            "api_secret": self.api_secret.text().strip(),
+            "deepseek_api_key": self.deepseek_api_key.text().strip(),
+            "deepseek_model": self.deepseek_model.text().strip() or "deepseek-v4-flash",
             "azure_key": self.azure_key.text().strip(),
             "azure_region": region,
         }
@@ -1892,20 +1936,20 @@ class MainWindow(QMainWindow):
             ready = self._backend_ready()
             if ready:
                 self.api_state.setText(
-                    f"Azure AI Speech 已配置（{self.config.get('azure_region', '')}）"
+                    f"国外模式：Azure 已配置（{self.config.get('azure_region', '')}）"
                 )
                 state = "ok"
             else:
-                self.api_state.setText("Azure 接口尚未配置")
+                self.api_state.setText("国外模式：Azure 接口尚未配置")
                 state = "error"
         else:
             xfyun = self._xfyun_ready()
             deepseek = bool(str(self.config.get("deepseek_api_key", "")).strip())
             if xfyun and deepseek:
-                self.api_state.setText("讯飞同传 & DeepSeek 接口已配置")
+                self.api_state.setText("国内模式：讯飞 & DeepSeek 已配置")
                 state = "ok"
             elif xfyun:
-                self.api_state.setText("讯飞同传已配置 · DeepSeek 未配置")
+                self.api_state.setText("国内模式：讯飞已配置 · DeepSeek 未配置")
                 state = "partial"
             else:
                 self.api_state.setText("接口尚未配置")
@@ -1917,19 +1961,43 @@ class MainWindow(QMainWindow):
             widget.style().polish(widget)
 
     def _open_settings(self) -> None:
+        before_provider = str(self.config.get("provider", "azure"))
         dialog = CredentialDialog(self.config, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             values = dialog.values()
-            if not values.get("azure_key") or not values.get("azure_region"):
-                QMessageBox.warning(
-                    self, "缺少信息", "Azure 密钥（Key）和区域（Region）都必须填写。"
-                )
-                return
+            if values.get("provider", "azure") == "azure":
+                if not values.get("azure_key") or not values.get("azure_region"):
+                    QMessageBox.warning(
+                        self, "缺少信息", "Azure 密钥（Key）和区域（Region）都必须填写。"
+                    )
+                    return
+            else:
+                if not all(values.get(key) for key in ("app_id", "api_key", "api_secret")):
+                    QMessageBox.warning(self, "缺少信息", "讯飞三项接口信息都必须填写。")
+                    return
+                if self.config.get("translation_direction") in {"auto", "en_zh"} and not values.get(
+                    "deepseek_api_key"
+                ):
+                    QMessageBox.warning(
+                        self,
+                        "缺少 DeepSeek API Key",
+                        "自动识别和英译中模式需要 DeepSeek API Key。",
+                    )
+                    return
             self.config.update(values)
             save_config(self.config)
             self._refresh_api_state()
             self._sync_direction_note(str(self.config.get("translation_direction", "zh_en")))
             self.status_label.setText("接口设置已保存")
+            after_provider = str(self.config.get("provider", "azure"))
+            if self.client is not None and after_provider != before_provider:
+                # 运行中切换 国内/国外 模式：自动按新模式重连，语言识别同步生效。
+                self.status_label.setText("正在按新模式重新连接…")
+                old = self.client
+                self.client = None
+                self.client_generation += 1
+                old.stop()
+                QTimer.singleShot(1500, self._launch_client)
 
     def _sync_direction_note(self, direction: str) -> None:
         azure = str(self.config.get("provider", "xfyun")) == "azure"
@@ -2132,11 +2200,17 @@ class MainWindow(QMainWindow):
         return self.device_combo.currentData()
 
     def _start(self) -> None:
-        if not self._backend_ready():
-            QMessageBox.warning(self, "接口未配置", "请先在接口设置中填写 Azure 密钥和区域。")
-            self._open_settings()
-            return
-        if str(self.config.get("provider", "azure")) != "azure":
+        provider = str(self.config.get("provider", "azure"))
+        if provider == "azure":
+            if not self._backend_ready():
+                QMessageBox.warning(self, "接口未配置", "请先在接口设置中填写 Azure 密钥和区域。")
+                self._open_settings()
+                return
+        else:
+            if not self._xfyun_ready():
+                QMessageBox.warning(self, "接口未配置", "请先填写讯飞接口信息。")
+                self._open_settings()
+                return
             if self.config.get("translation_direction") in {"auto", "en_zh"} and not str(
                 self.config.get("deepseek_api_key", "")
             ).strip():

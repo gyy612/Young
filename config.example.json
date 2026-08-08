@@ -1,5 +1,10 @@
 {
   "provider": "azure",
+  "app_id": "",
+  "api_key": "",
+  "api_secret": "",
+  "deepseek_api_key": "",
+  "deepseek_model": "deepseek-v4-flash",
   "azure_key": "",
   "azure_region": "swedencentral",
   "azure_voice_zh": "zh-CN-XiaoxiaoNeural",
