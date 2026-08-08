@@ -406,6 +406,7 @@ class DeepSeekTranslator:
         self,
         *,
         on_progress=None,
+        on_result=None,
         should_stop=None,
         workers: int = 2,
     ) -> None:
@@ -423,14 +424,20 @@ class DeepSeekTranslator:
             nonlocal done
             source_lang = detect_source_language(sentence)
             target_lang = "zh" if source_lang == "en" else "en"
+            translated = ""
             try:
-                self.translate(sentence, source_lang, target_lang)
+                translated = self.translate(sentence, source_lang, target_lang)
             except Exception:
                 pass
             finally:
+                if on_result is not None:
+                    try:
+                        on_result(sentence, translated)
+                    except Exception:
+                        pass
                 with progress_lock:
                     done += 1
-                    if on_progress is not None and (done % 10 == 0 or done == total):
+                    if on_progress is not None:
                         on_progress(done, total)
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)

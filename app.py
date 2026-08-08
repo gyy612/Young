@@ -44,6 +44,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -444,6 +446,134 @@ class CredentialDialog(QDialog):
             "azure_key": self.azure_key.text().strip(),
             "azure_region": region,
         }
+
+
+class GlossaryDialog(QDialog):
+    """固定翻译列表（苹果风格）：原文 → 译文，支持实时搜索。"""
+
+    def __init__(
+        self,
+        entries: list[list[str]],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("固定翻译列表")
+        self.setMinimumSize(560, 420)
+        self._entries = [[str(s), str(t)] for s, t in entries if s and t]
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+
+        title = QLabel("固定翻译")
+        title.setObjectName("dialogTitle")
+        layout.addWidget(title)
+        self.count_label = QLabel()
+        self.count_label.setObjectName("mutedLabel")
+        layout.addWidget(self.count_label)
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("搜索原文或译文…")
+        self.search.textChanged.connect(self._apply_filter)
+        layout.addWidget(self.search)
+
+        self.list = QListWidget()
+        self.list.setObjectName("glossaryList")
+        self.list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        layout.addWidget(self.list, 1)
+
+        close_button = QPushButton("完成")
+        close_button.setObjectName("primaryButton")
+        close_button.clicked.connect(self.accept)
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        button_row.addWidget(close_button)
+        layout.addLayout(button_row)
+
+        self._apply_filter("")
+
+    def _apply_filter(self, text: str) -> None:
+        query = text.strip().casefold()
+        entries = self._entries
+        if query:
+            entries = [
+                [s, t]
+                for s, t in entries
+                if query in s.casefold() or query in t.casefold()
+            ]
+        self.count_label.setText(
+            f"共 {len(entries)} 条 · 中英双向生效"
+            + (f"（匹配 {len(entries)} 条）" if query else "")
+        )
+        self.list.clear()
+        for source, target in entries:
+            item = QListWidgetItem(f"{source}  →  {target}")
+            item.setToolTip(f"{source} → {target}")
+            self.list.addItem(item)
+
+
+class PrewarmDialog(QDialog):
+    """文章预翻译列表：逐句显示状态与译文结果（只保留截断文本，控制内存）。"""
+
+    DISPLAY_LIMIT = 72
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("文章预翻译")
+        self.setMinimumSize(640, 460)
+        self._rows: dict[str, QListWidgetItem] = {}
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+
+        title = QLabel("文章预翻译")
+        title.setObjectName("dialogTitle")
+        layout.addWidget(title)
+        self.summary = QLabel("等待稿件…")
+        self.summary.setObjectName("mutedLabel")
+        layout.addWidget(self.summary)
+
+        self.list = QListWidget()
+        self.list.setObjectName("prewarmList")
+        self.list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        layout.addWidget(self.list, 1)
+
+        close_button = QPushButton("完成")
+        close_button.setObjectName("primaryButton")
+        close_button.clicked.connect(self.accept)
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        button_row.addWidget(close_button)
+        layout.addLayout(button_row)
+
+    @classmethod
+    def _short(cls, text: str) -> str:
+        text = text.strip()
+        return text if len(text) <= cls.DISPLAY_LIMIT else text[: cls.DISPLAY_LIMIT] + "…"
+
+    def refresh(self, results: dict[str, str], done: int, total: int) -> None:
+        """增量刷新：只新增/更新变化的行，避免整表重建。"""
+        if total > 0:
+            state = " · 全部完成" if done >= total else " · 预翻译中…"
+            self.summary.setText(f"已完成 {done}/{total} 段{state}")
+        for sentence, translation in results.items():
+            text = (
+                f"{self._short(sentence)}  →  {self._short(translation)}"
+                if translation
+                else f"{self._short(sentence)}  →  （翻译中…）"
+            )
+            item = self._rows.get(sentence)
+            if item is None:
+                item = QListWidgetItem(text)
+                item.setToolTip(f"{sentence}\n→\n{translation}" if translation else sentence)
+                self.list.addItem(item)
+                self._rows[sentence] = item
+            elif item.text() != text:
+                item.setText(text)
+                item.setToolTip(f"{sentence}\n→\n{translation}" if translation else sentence)
 
 
 class TranslationTimingDialog(QDialog):
@@ -1617,6 +1747,11 @@ class MainWindow(QMainWindow):
         self.events: queue.Queue[dict] = queue.Queue()
         self.client: XfyunInterpreter | None = None
         self.client_generation = 0
+        self.glossary_dialog: GlossaryDialog | None = None
+        self.prewarm_dialog: PrewarmDialog | None = None
+        self._prewarm_results: dict[str, str] = {}
+        self._prewarm_done = 0
+        self._prewarm_total = 0
         self.overlay: SubtitleOverlay | None = None
         self.result_window: BilingualDocumentWindow | None = None
         self.devices: list[tuple[int, str]] = []
@@ -1813,42 +1948,50 @@ class MainWindow(QMainWindow):
         # 翻译资料
         row = QHBoxLayout()
         row.setSpacing(10)
-        row.addWidget(self._settings_label("翻译资料"))
-        self.materials_status = QLabel("未导入固定翻译或参考稿件")
+        row.addWidget(self._settings_label("固定翻译"))
+        self.materials_status = QLabel("未导入")
         self.materials_status.setObjectName("mutedLabel")
         row.addWidget(self.materials_status, 1)
-        root.addLayout(row)
-        self.prewarm_progress = QProgressBar()
-        self.prewarm_progress.setObjectName("prewarmProgress")
-        self.prewarm_progress.setRange(0, 100)
-        self.prewarm_progress.setValue(0)
-        self.prewarm_progress.setFormat("参考稿预翻译中 %v/%m 段")
-        self.prewarm_progress.setTextVisible(True)
-        self.prewarm_progress.setFixedHeight(14)
-        self.prewarm_progress.setVisible(False)
-        progress_row = QHBoxLayout()
-        progress_row.setSpacing(8)
-        progress_row.addSpacing(66)
-        progress_row.addWidget(self.prewarm_progress, 1)
-        root.addLayout(progress_row)
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        row.addSpacing(66)
         glossary_button = QPushButton("上传固定译法")
         glossary_button.setObjectName("outlineButton")
         glossary_button.setToolTip("导入 TXT、CSV、TSV 或 XLSX 术语表")
         glossary_button.clicked.connect(self._import_glossary)
         row.addWidget(glossary_button)
+        glossary_list_button = QPushButton("查看列表")
+        glossary_list_button.setObjectName("outlineButton")
+        glossary_list_button.clicked.connect(self._open_glossary_list)
+        row.addWidget(glossary_list_button)
+        root.addLayout(row)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(self._settings_label("文章预翻译"))
+        self.prewarm_progress = QProgressBar()
+        self.prewarm_progress.setObjectName("prewarmProgress")
+        self.prewarm_progress.setRange(0, 100)
+        self.prewarm_progress.setValue(0)
+        self.prewarm_progress.setFormat("未导入稿件")
+        self.prewarm_progress.setTextVisible(True)
+        self.prewarm_progress.setFixedHeight(14)
+        row.addWidget(self.prewarm_progress, 1)
         reference_button = QPushButton("导入参考稿件")
         reference_button.setObjectName("outlineButton")
         reference_button.setToolTip("导入 TXT、DOCX、CSV、TSV 或 XLSX 稿件")
         reference_button.clicked.connect(self._import_reference)
         row.addWidget(reference_button)
+        prewarm_list_button = QPushButton("查看列表")
+        prewarm_list_button.setObjectName("outlineButton")
+        prewarm_list_button.clicked.connect(self._open_prewarm_list)
+        row.addWidget(prewarm_list_button)
+        root.addLayout(row)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addStretch(1)
         clear_materials_button = QPushButton("清除资料")
         clear_materials_button.setObjectName("ghostButton")
         clear_materials_button.clicked.connect(self._clear_translation_materials)
         row.addWidget(clear_materials_button)
-        row.addStretch(1)
         root.addLayout(row)
 
         root.addStretch(1)
@@ -2067,23 +2210,38 @@ class MainWindow(QMainWindow):
     def _update_materials_status(self) -> None:
         entries = self.config.get("glossary_entries", [])
         glossary_count = len(entries) if isinstance(entries, list) else 0
-        reference_text = str(self.config.get("reference_text", "") or "")
         glossary_name = str(self.config.get("glossary_file_name", "") or "")
-        reference_name = str(self.config.get("reference_file_name", "") or "")
-
-        parts: list[str] = []
         if glossary_count:
-            label = f"固定译法 {glossary_count} 条"
+            label = f"已导入 {glossary_count} 条"
             if glossary_name:
                 label += f"（{glossary_name}）"
-            parts.append(label)
-        if reference_text:
-            label = f"参考稿 {len(reference_text)} 字"
-            if reference_name:
-                label += f"（{reference_name}）"
-            parts.append(label)
+        else:
+            label = "未导入"
+        self.materials_status.setText(label)
 
-        self.materials_status.setText(" · ".join(parts) if parts else "未导入固定翻译或参考稿件")
+    def _open_glossary_list(self) -> None:
+        entries = self.config.get("glossary_entries", [])
+        if not isinstance(entries, list) or not entries:
+            QMessageBox.information(self, "固定翻译", "还没有导入固定翻译，先点“上传固定译法”。")
+            return
+        if self.glossary_dialog is None or not self.glossary_dialog.isVisible():
+            self.glossary_dialog = GlossaryDialog(entries, self)
+            self.glossary_dialog.show()
+        else:
+            self.glossary_dialog.raise_()
+            self.glossary_dialog.activateWindow()
+
+    def _open_prewarm_list(self) -> None:
+        if self.prewarm_dialog is None or not self.prewarm_dialog.isVisible():
+            self.prewarm_dialog = PrewarmDialog(self)
+            self.prewarm_dialog.show()
+        else:
+            self.prewarm_dialog.raise_()
+            self.prewarm_dialog.activateWindow()
+        if self.prewarm_dialog is not None:
+            self.prewarm_dialog.refresh(
+                self._prewarm_results, self._prewarm_done, self._prewarm_total
+            )
 
     def _sync_translation_materials_to_client(self) -> None:
         if self.client is not None:
@@ -2120,6 +2278,7 @@ class MainWindow(QMainWindow):
             "英译中时 DeepSeek 会优先且固定使用右侧译法；"
             "中译英在启用 DeepSeek 资料翻译时也会使用对应译法。",
         )
+        self._open_glossary_list()
 
     def _import_reference(self) -> None:
         selected, _ = QFileDialog.getOpenFileName(
@@ -2149,7 +2308,11 @@ class MainWindow(QMainWindow):
             "参考稿件已导入",
             f"已导入 {len(reference_text)} 个字符。翻译时会自动选取相关段落作为上下文。{suffix}",
         )
+        self._prewarm_results = {}
+        self._prewarm_done = 0
+        self._prewarm_total = 0
         self._start_reference_prewarm()
+        self._open_prewarm_list()
 
     def _start_reference_prewarm(self) -> None:
         """上传稿件后立即在后台预翻译，识别命中稿件时可直接取用预译文。"""
@@ -2171,7 +2334,16 @@ class MainWindow(QMainWindow):
             if self.client is None:
                 self.events.put({"type": "status", "text": text, "state": "translating"})
 
+        # 结果只保留截断后的短文本，完整译文落在 SQLite 翻译记忆里，避免常驻内存。
+        self._prewarm_results = {}
+
+        def on_result(sentence: str, translated: str) -> None:
+            if len(self._prewarm_results) < 500:
+                self._prewarm_results[sentence] = translated
+
         def on_progress(done: int, total: int) -> None:
+            self._prewarm_done = int(done)
+            self._prewarm_total = int(total)
             self.events.put(
                 {"type": "prewarm_progress", "done": int(done), "total": int(total)}
             )
@@ -2180,7 +2352,10 @@ class MainWindow(QMainWindow):
 
         def run() -> None:
             emit("正在后台预翻译参考稿…")
-            translator.prewarm_reference(on_progress=on_progress)
+            translator.prewarm_reference(
+                on_progress=on_progress,
+                on_result=on_result,
+            )
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -2204,6 +2379,17 @@ class MainWindow(QMainWindow):
         self.config["reference_text"] = ""
         self.config["reference_file_name"] = ""
         save_config(self.config)
+        self._prewarm_results = {}
+        self._prewarm_done = 0
+        self._prewarm_total = 0
+        self.prewarm_progress.setValue(0)
+        self.prewarm_progress.setFormat("未导入稿件")
+        if self.prewarm_dialog is not None:
+            self.prewarm_dialog.close()
+            self.prewarm_dialog = None
+        if self.glossary_dialog is not None:
+            self.glossary_dialog.close()
+            self.glossary_dialog = None
         self._update_materials_status()
         self._sync_translation_materials_to_client()
         self.status_label.setText("翻译资料已清除")
@@ -2475,10 +2661,12 @@ class MainWindow(QMainWindow):
                     continue
                 self.prewarm_progress.setRange(0, total)
                 self.prewarm_progress.setValue(done)
-                self.prewarm_progress.setFormat(f"参考稿预翻译中 {done}/{total} 段")
-                self.prewarm_progress.setVisible(done < total)
                 if done >= total:
-                    QTimer.singleShot(2500, self.prewarm_progress.hide)
+                    self.prewarm_progress.setFormat(f"预翻译完成（{total} 段）")
+                else:
+                    self.prewarm_progress.setFormat(f"参考稿预翻译中 {done}/{total} 段")
+                if self.prewarm_dialog is not None and self.prewarm_dialog.isVisible():
+                    self.prewarm_dialog.refresh(self._prewarm_results, done, total)
             elif event_type == "session_finalized":
                 segments = event.get("segments", [])
                 if isinstance(segments, list):
@@ -2644,6 +2832,13 @@ def stylesheet() -> str:
     QLineEdit:focus, QTextEdit:focus {{ border: 2px solid #90B8EA; }}
     QLineEdit {{ min-height: 38px; }}
     QTextEdit {{ line-height: 1.55; }}
+    QLineEdit#glossarySearch {{ background: #F2F4F8; border: none; border-radius: 8px; padding: 7px 12px; min-height: 30px; }}
+    QLineEdit#glossarySearch:focus {{ background: white; border: 1px solid #90B8EA; }}
+    QListWidget#glossaryList, QListWidget#prewarmList {{ background: white; border: 1px solid {TOKENS['border']}; border-radius: 10px; padding: 6px; outline: 0; }}
+    QListWidget#glossaryList::item, QListWidget#prewarmList::item {{ padding: 8px 10px; border-radius: 8px; margin: 1px 0; color: {TOKENS['text']}; }}
+    QListWidget#glossaryList::item:hover, QListWidget#prewarmList::item:hover {{ background: rgba(23,104,213,0.06); }}
+    QProgressBar#prewarmProgress {{ background: #E9EDF3; border: none; border-radius: 7px; min-height: 14px; max-height: 14px; text-align: center; color: {TOKENS['muted']}; font-size: 11px; }}
+    QProgressBar#prewarmProgress::chunk {{ background: {TOKENS['blue']}; border-radius: 7px; }}
     QComboBox {{ background: white; color: {TOKENS['text']}; border: 1px solid {TOKENS['border']}; border-radius: 8px; padding: 3px 10px; padding-right: 26px; min-height: 34px; selection-background-color: {TOKENS['blue']}; }}
     QComboBox:hover {{ border-color: #AEC5E5; }}
     QComboBox:focus {{ border: 1px solid #90B8EA; }}
